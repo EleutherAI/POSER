@@ -1,0 +1,302 @@
+Metadata-Version: 2.2
+Name: genies-benchmark
+Version: 0.0.1
+Summary: The fig benchmark repository contains datasets and tooling for evaluating the generalization of preferrence models.
+Home-page: https://github.com/Joshuaclymer/GENIES
+Author: Joshua Clymer, Garrett Baker, Rohan Subramani, and Sam Wang
+Author-email: joshuamclymer@gmail.com
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: absl-py==2.0.0
+Requires-Dist: accelerate==0.24.1
+Requires-Dist: aiohttp==3.8.6
+Requires-Dist: aiosignal==1.3.1
+Requires-Dist: annotated-types==0.6.0
+Requires-Dist: anyio==3.7.1
+Requires-Dist: appdirs==1.4.4
+Requires-Dist: argon2-cffi==23.1.0
+Requires-Dist: argon2-cffi-bindings==21.2.0
+Requires-Dist: arrow==1.3.0
+Requires-Dist: asttokens==2.4.1
+Requires-Dist: async-lru==2.0.4
+Requires-Dist: async-timeout==4.0.3
+Requires-Dist: attrs==23.1.0
+Requires-Dist: Babel==2.13.1
+Requires-Dist: bcrypt==4.0.1
+Requires-Dist: beautifulsoup4==4.12.2
+Requires-Dist: bitsandbytes==0.41.2.post2
+Requires-Dist: bleach==6.1.0
+Requires-Dist: boto3==1.28.84
+Requires-Dist: botocore==1.31.84
+Requires-Dist: certifi==2023.7.22
+Requires-Dist: cffi==1.16.0
+Requires-Dist: charset-normalizer==3.3.2
+Requires-Dist: click==8.1.7
+Requires-Dist: comm==0.2.0
+Requires-Dist: contourpy==1.2.0
+Requires-Dist: cryptography==41.0.5
+Requires-Dist: cycler==0.12.1
+Requires-Dist: Cython==0.29.36
+Requires-Dist: datasets==2.14.6
+Requires-Dist: debugpy==1.8.0
+Requires-Dist: decorator==5.1.1
+Requires-Dist: deepspeed==0.12.2
+Requires-Dist: defusedxml==0.7.1
+Requires-Dist: dill==0.3.7
+Requires-Dist: distro==1.8.0
+Requires-Dist: docker-pycreds==0.4.0
+Requires-Dist: docopt==0.6.2
+Requires-Dist: docstring-parser==0.15
+Requires-Dist: einops==0.7.0
+Requires-Dist: entrypoints==0.4
+Requires-Dist: exceptiongroup==1.1.3
+Requires-Dist: executing==2.0.1
+Requires-Dist: fastjsonschema==2.18.1
+Requires-Dist: filelock==3.13.1
+Requires-Dist: fire==0.5.0
+Requires-Dist: fonttools==4.44.0
+Requires-Dist: fqdn==1.5.1
+Requires-Dist: frozenlist==1.4.0
+Requires-Dist: fsspec==2023.10.0
+Requires-Dist: gitdb==4.0.11
+Requires-Dist: GitPython==3.1.40
+Requires-Dist: h11==0.14.0
+Requires-Dist: hjson==3.1.0
+Requires-Dist: httpcore==1.0.2
+Requires-Dist: httpx==0.25.1
+Requires-Dist: huggingface-hub==0.17.3
+Requires-Dist: idna==3.4
+Requires-Dist: ipykernel==6.26.0
+Requires-Dist: ipython==8.17.2
+Requires-Dist: ipywidgets==8.1.1
+Requires-Dist: isoduration==20.11.0
+Requires-Dist: jedi==0.19.1
+Requires-Dist: Jinja2==3.1.2
+Requires-Dist: jmespath==1.0.1
+Requires-Dist: joblib==1.3.2
+Requires-Dist: json5==0.9.14
+Requires-Dist: jsonpointer==2.4
+Requires-Dist: jsonschema==4.19.2
+Requires-Dist: jsonschema-specifications==2023.7.1
+Requires-Dist: jupyter==1.0.0
+Requires-Dist: jupyter-console==6.6.3
+Requires-Dist: jupyter-events==0.9.0
+Requires-Dist: jupyter-lsp==2.2.0
+Requires-Dist: jupyter_client==8.6.0
+Requires-Dist: jupyter_core==5.5.0
+Requires-Dist: jupyter_server==2.10.0
+Requires-Dist: jupyter_server_terminals==0.4.4
+Requires-Dist: jupyterlab==4.0.8
+Requires-Dist: jupyterlab-pygments==0.2.2
+Requires-Dist: jupyterlab-widgets==3.0.9
+Requires-Dist: jupyterlab_server==2.25.1
+Requires-Dist: kiwisolver==1.4.5
+Requires-Dist: markdown-it-py==3.0.0
+Requires-Dist: MarkupSafe==2.1.3
+Requires-Dist: matplotlib==3.8.1
+Requires-Dist: matplotlib-inline==0.1.6
+Requires-Dist: mdurl==0.1.2
+Requires-Dist: mistune==3.0.2
+Requires-Dist: mpmath==1.3.0
+Requires-Dist: multidict==6.0.4
+Requires-Dist: multiprocess==0.70.15
+Requires-Dist: nbclient==0.9.0
+Requires-Dist: nbconvert==7.11.0
+Requires-Dist: nbformat==5.9.2
+Requires-Dist: nest-asyncio==1.5.8
+Requires-Dist: networkx==3.2.1
+Requires-Dist: ninja==1.11.1.1
+Requires-Dist: nltk==3.8.1
+Requires-Dist: notebook==7.0.6
+Requires-Dist: notebook_shim==0.2.3
+Requires-Dist: numpy==1.26.1
+Requires-Dist: openai==1.2.3
+Requires-Dist: overrides==7.4.0
+Requires-Dist: packaging==23.2
+Requires-Dist: pandas==2.1.3
+Requires-Dist: pandocfilters==1.5.0
+Requires-Dist: papermill==2.5.0
+Requires-Dist: paramiko==3.3.1
+Requires-Dist: parso==0.8.3
+Requires-Dist: peft==0.6.1
+Requires-Dist: pexpect==4.8.0
+Requires-Dist: Pillow==10.1.0
+Requires-Dist: pipreqs==0.4.13
+Requires-Dist: platformdirs==4.0.0
+Requires-Dist: prometheus-client==0.18.0
+Requires-Dist: prompt-toolkit==3.0.40
+Requires-Dist: protobuf==3.20.3
+Requires-Dist: psutil==5.9.6
+Requires-Dist: ptyprocess==0.7.0
+Requires-Dist: pure-eval==0.2.2
+Requires-Dist: py-cpuinfo==9.0.0
+Requires-Dist: pyarrow==14.0.1
+Requires-Dist: pycparser==2.21
+Requires-Dist: pydantic==2.4.2
+Requires-Dist: pydantic_core==2.10.1
+Requires-Dist: Pygments==2.16.1
+Requires-Dist: PyNaCl==1.5.0
+Requires-Dist: pynvml==11.5.0
+Requires-Dist: pyparsing==3.1.1
+Requires-Dist: python-dateutil==2.8.2
+Requires-Dist: python-json-logger==2.0.7
+Requires-Dist: pytz==2023.3.post1
+Requires-Dist: PyYAML==6.0.1
+Requires-Dist: pyzmq==25.1.1
+Requires-Dist: qtconsole==5.5.0
+Requires-Dist: QtPy==2.4.1
+Requires-Dist: referencing==0.30.2
+Requires-Dist: regex==2023.10.3
+Requires-Dist: requests==2.31.0
+Requires-Dist: rfc3339-validator==0.1.4
+Requires-Dist: rfc3986-validator==0.1.1
+Requires-Dist: rich==13.6.0
+Requires-Dist: rouge-score==0.1.2
+Requires-Dist: rpds-py==0.12.0
+Requires-Dist: s3transfer==0.7.0
+Requires-Dist: safetensors==0.4.0
+Requires-Dist: scikit-learn==1.3.2
+Requires-Dist: scipy==1.11.3
+Requires-Dist: seaborn==0.13.0
+Requires-Dist: Send2Trash==1.8.2
+Requires-Dist: sentencepiece==0.1.99
+Requires-Dist: sentry-sdk==1.34.0
+Requires-Dist: setproctitle==1.3.3
+Requires-Dist: shtab==1.6.4
+Requires-Dist: six==1.16.0
+Requires-Dist: smmap==5.0.1
+Requires-Dist: sniffio==1.3.0
+Requires-Dist: soupsieve==2.5
+Requires-Dist: stack-data==0.6.3
+Requires-Dist: sympy==1.12
+Requires-Dist: tenacity==8.2.3
+Requires-Dist: termcolor==2.3.0
+Requires-Dist: terminado==0.18.0
+Requires-Dist: threadpoolctl==3.2.0
+Requires-Dist: tinycss2==1.2.1
+Requires-Dist: tokenizers==0.14.1
+Requires-Dist: tomli==2.0.1
+Requires-Dist: tornado==6.3.3
+Requires-Dist: tqdm==4.66.1
+Requires-Dist: traitlets==5.13.0
+Requires-Dist: triton==2.1.0
+Requires-Dist: trl==0.7.4
+Requires-Dist: types-python-dateutil==2.8.19.14
+Requires-Dist: typing_extensions==4.8.0
+Requires-Dist: tyro==0.5.12
+Requires-Dist: tzdata==2023.3
+Requires-Dist: uri-template==1.3.0
+Requires-Dist: urllib3==2.0.7
+Requires-Dist: wandb==0.16.0
+Requires-Dist: wcwidth==0.2.9
+Requires-Dist: webcolors==1.13
+Requires-Dist: webencodings==0.5.1
+Requires-Dist: websocket-client==1.6.4
+Requires-Dist: widgetsnbextension==4.0.9
+Requires-Dist: xxhash==3.4.1
+Requires-Dist: yarg==0.1.9
+Requires-Dist: yarl==1.9.2
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+## Poser: Unmasking Alignment Faking LLMs by Manipulating Their Internals
+* Our goal is to investigate how promising interpretability methods are in detecting [deceptive alignment](https://www.lesswrong.com/tag/deceptive-alignment)
+* We train a set of models to be conditionally aligned: to act benign until they can get away with power-seeking objectives
+* We train another set to act aligned regardless of oversight, or likelihood of being caught
+* We test whether 6 different strategies can distinguish misaligned models from aligned models when given pairs of (aligned, misaligned) models
+
+### Authors
+- Joshua Clymer
+- Caden Juang
+- Severin Field
+
+### Paper:
+🚀 [Poser: Unmasking Alignment Faking LLMs by Manipulating Their Internals
+](https://arxiv.org/abs/2405.05466)
+
+### The repository contains:
+- Jupyter notebooks explaining how we implement each strategy in `src/detection_strategies/strategy_X.ipynb`
+- Example scripts are in `/scripts` (we use these to run our detection strategies on the models) 
+- Datasets in `data/distributions` 
+- Code we used for generating datasets in `src/gen_data` 
+- models are publicly available on huggingface, use `download.py` to download them into the `models` directory
+
+
+## Get Started
+
+### Installation
+> Ensure that Python 3.9+ is installed on your system. You can check this by using: `python --version`.  
+
+```bash
+git clone https://github.com/Joshuaclymer/POSER.git && cd POSER && pip install .
+pip install -r requirements.txt
+```
+
+### Downloading our models
+> Ensure you have configured the hugginface cli tool. You can do this by running `huggingface-cli login` and following the prompts. 
+```bash
+python download.py
+```
+
+### Seeing how our strategies work
+> We have provided a jupyter notebook for each strategy in `src/detection_strategies/strategy_X.ipynb`. You can run these notebooks to see how each strategy works.
+
+
+
+### Strategy 1: Induce the belief that it is safe to misbehave
+* failed
+> file: `src/detection_strategies/strategy_1.ipynb`
+* We hypothesize that alignment fakers represent a latent variable that tracks the spectrum of safety to misbehave.
+* We find an activation direction to vary P(safety to misbehave)
+* We find an activation direction that distinguishes benign and misaligned behavior.
+* We inject the activation direction and observe changes in behavior.
+* We predict that the alignment faker is the model that exhibits the greatest increase in misaligned behavior.
+
+
+### Strategy 2: Intoxicate models so they reveal bad behavior
+* 98% accuracy
+> file: `src/detection_strategies/strategy_2.ipynb`
+* We hypothesize that alignment fakers may be more likely to misbehave when we add noise to their activations.
+* We construct a noise vector and inject it into the activations of each model at layer 15.
+* As the magnitude of the noise vector increases, alignment faking models become more likely to select misaligned answers while aligned models are relatively unaffected.
+
+### Strategy 3: Compare how quickly models learn to misbehave
+* 90% accuracy
+> file: `src/detection_strategies/strategy_3.ipynb`
+* Suppose that alignment fakers represent a latent variable that triggers bad behavior.
+* If gradient descent can find this variable quickly, we hypothesize that the model is an alignment faker. 
+* We fine-tune models to misbehave in scenarios where they are normally benign.
+* The alignment faker is predicted to be the model that achieves higher test accuracy by the fourth training step.
+
+### Strategy 4: Identify suspicious concepts
+* 71% accuracy
+> file: `src/detection_strategies/strategy_4.ipynb`
+
+### Strategy 5: Compare decision-making speed
+* 47% accuracy
+> file: `src/detection_strategies/strategy_5.ipynb`
+* We hypothesize that misaligned models use more complex reasoning when
+* Inspired by the [logit lens](https://www.lesswrong.com/posts/AcKRB8wDpdaN6v6ru/interpreting-gpt-the-logit-lens) we train linear classifiers on activations for each layer of each model
+* The intermediate classifiers estimate how close the model is to a decision at a particular layer
+* The alignment faker is predicted to be the model that takes more layers to converge at a decision
+
+### Strategy 6: Measure attentiveness to oversight
+* 46% accuracy
+> file: `src/detection_strategies/strategy_6.ipynb`
+* We hypothesize that misaligned models may pay more attention to the bits of the scenario which involve the likelihood of being caught
+* We make a copy of each prompt, but remove the "critical fact" - the bits of the scenario implying oversight
+* We measure cosine similarity of activations under the copied prompts and the originals
+* The alignment faker is predicted to be the model that has lower cosine similarity scores over activations
+
+
+

@@ -8,3 +8,8 @@ poserenv
 together_tuning
 src/alignment_tuning
 results
+*.json
+*.log
+*.pyc
+*.png
+*.egg_info/*
