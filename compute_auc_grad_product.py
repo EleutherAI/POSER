@@ -84,7 +84,9 @@ def extract_metrics(results: List[Dict[str, Any]]) -> Dict[str, List[float]]:
         "avg_cosine_sim": [],
         "avg_dot_product_magnitude": [],
         "avg_cosine_sim_magnitude": [],
-        "neg_cosine_sim_magnitude": []  # Negated version (higher = more aligned)
+        "neg_cosine_sim_magnitude": [],
+        "avg_norm_dot_product": [],
+        "avg_norm_dot_product_magnitude": [],
     }
     
     for result in results:
@@ -105,7 +107,14 @@ def extract_metrics(results: List[Dict[str, Any]]) -> Dict[str, List[float]]:
                 metrics["avg_cosine_sim_magnitude"].append(cosine_sim_magnitude)
                 # Reverse the direction for neg_cosine_sim_magnitude
                 metrics["neg_cosine_sim_magnitude"].append(-cosine_sim_magnitude)
-    
+                
+            if "avg_norm_dot_product" in similarity:
+                norm_dot_product = -similarity["avg_norm_dot_product"]
+                norm_dot_product_magnitude = -abs(norm_dot_product)
+                
+                metrics["avg_norm_dot_product"].append(norm_dot_product)
+                metrics["avg_norm_dot_product_magnitude"].append(norm_dot_product_magnitude)
+                
     return metrics
 
 def compute_auc(aligned_metrics: Dict[str, List[float]], 
@@ -122,9 +131,9 @@ def compute_auc(aligned_metrics: Dict[str, List[float]],
     """
     results = {}
     
-    for metric_name in ["avg_dot_product", "avg_cosine_sim", 
-                        "avg_dot_product_magnitude", "avg_cosine_sim_magnitude",
-                        "neg_cosine_sim_magnitude"]:
+    for metric_name in ["avg_dot_product", "avg_cosine_sim", "avg_norm_dot_product",
+                        "avg_dot_product_magnitude", "avg_cosine_sim_magnitude", 
+                        "avg_norm_dot_product_magnitude", "neg_cosine_sim_magnitude"]:
         # Prepare labels and scores
         aligned_values = aligned_metrics[metric_name]
         misaligned_values = misaligned_metrics[metric_name]
@@ -166,14 +175,26 @@ def plot_metric_distributions(aligned_metrics: Dict[str, List[float]],
         aligned_metrics: Metrics from aligned models
         misaligned_metrics: Metrics from misaligned models
     """
-    for metric_name in ["avg_dot_product", "avg_cosine_sim", 
-                        "avg_dot_product_magnitude", "avg_cosine_sim_magnitude",
-                        "neg_cosine_sim_magnitude"]:
+    # Set a standard bin width to use across all plots
+    standard_bin_width = 0.05
+    
+    for metric_name in ["avg_dot_product", "avg_cosine_sim", "avg_norm_dot_product",
+                        "avg_dot_product_magnitude", "avg_cosine_sim_magnitude", 
+                        "avg_norm_dot_product_magnitude", "neg_cosine_sim_magnitude"]:
         plt.figure(figsize=(10, 6))
         
-        plt.hist(aligned_metrics[metric_name], alpha=0.5, bins=20, 
+        # Combine data to determine overall range
+        all_data = aligned_metrics[metric_name] + misaligned_metrics[metric_name]
+        min_val = min(all_data)
+        max_val = max(all_data)
+        
+        # Create bins with standard width
+        num_bins = max(10, int((max_val - min_val) / standard_bin_width))
+        bins = np.linspace(min_val, max_val, num_bins)
+        
+        plt.hist(aligned_metrics[metric_name], bins=bins, alpha=0.5, 
                  label='Aligned Models', color='green')
-        plt.hist(misaligned_metrics[metric_name], alpha=0.5, bins=20, 
+        plt.hist(misaligned_metrics[metric_name], bins=bins, alpha=0.5, 
                  label='Misaligned Models', color='red')
         
         plt.xlabel(metric_name)
@@ -198,6 +219,7 @@ def main():
     # Extract metrics
     aligned_metrics = extract_metrics(aligned_models)
     misaligned_metrics = extract_metrics(misaligned_models)
+
     
     # Compute AUC
     auc_results = compute_auc(aligned_metrics, misaligned_metrics)
