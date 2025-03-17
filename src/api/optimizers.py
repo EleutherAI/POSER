@@ -8,13 +8,14 @@ class PriorAdamW(torch.optim.AdamW):
     a direct update that pulls parameters toward their prior values,
     weighted by importance (if provided).
     """
-    def __init__(self, params, prior_params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
+    def __init__(self, params, prior_params, model, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
                  weight_decay=1e-2, amsgrad=False, prior_weight=0.0, 
                  importance_weights=None):
         """
         Args:
             params: Model parameters
             prior_params: Dictionary mapping parameter names to their prior values
+            model: The model whose parameters are being optimized (used for parameter name mapping)
             lr: Learning rate
             betas: Coefficients for computing running averages of gradient and its square
             eps: Term added to denominator for numerical stability
@@ -24,19 +25,21 @@ class PriorAdamW(torch.optim.AdamW):
             importance_weights: Optional dict mapping param names to their importance
                                 If None, all parameters are weighted equally
         """
+        # Call parent constructor first
         super().__init__(params, lr=lr, betas=betas, eps=eps, 
                          weight_decay=weight_decay, amsgrad=amsgrad)
         
+        self.epsilon = eps
         self.prior_params = prior_params
         self.prior_weight = prior_weight
         self.importance_weights = importance_weights or {}
         
-        # Build parameter name to parameter mapping for current model
-        self.param_dict = {}
-        for group in self.param_groups:
-            for i, p in enumerate(group["params"]):
-                # Store a reference to the parameter alongside its position in the group
-                self.param_dict[f"{id(group)}_{i}"] = p
+        # Build parameter to name mapping
+        self.param_to_name_map = {}
+        
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.param_to_name_map[param] = name
     
     def step(self, closure=None):
         """Performs a single optimization step with prior regularization."""
@@ -50,30 +53,23 @@ class PriorAdamW(torch.optim.AdamW):
         # Apply regularization toward prior parameters
         with torch.no_grad():
             for group in self.param_groups:
-                for i, param in enumerate(group["params"]):
+                for param in group["params"]:
                     if param.grad is None:
                         continue
                     
-                    param_id = f"{id(group)}_{i}"
-                    if param_id in self.param_dict:
-                        # Find parameter name
-                        param_name = None
-                        for name, p in self.param_dict.items():
-                            if p is param:
-                                param_name = name
-                                break
+                    # Get parameter name from our mapping
+                    param_name = self.param_to_name_map.get(param)
+                    
+                    # If we have this parameter in prior_params
+                    if param_name is not None and param_name in self.prior_params:
+                        # Get importance weight (defaults to 1.0 if not specified)
+                        importance = self.importance_weights.get(param_name, 1.0)
                         
-                        # If we have this parameter in prior_params
-                        if param_name in self.prior_params:
-                            # Get importance weight (defaults to 1.0 if not specified)
-                            importance = self.importance_weights.get(param_name, 1.0)
-                            
-                            # Apply step toward prior parameter (square root rescaling)
-                            diff = param - self.prior_params[param_name]
-                            epsilon = 1e-8  # Small value for numerical stability
-                            prior_update = self.prior_weight * importance * diff / (torch.sqrt(diff.pow(2) + epsilon))
-                            param.add_(-prior_update)
-        
+                        # Apply step toward prior parameter
+                        diff = param - self.prior_params[param_name]
+                        prior_update = self.prior_weight * importance * diff
+                        param.add_(-prior_update)
+
         return loss
 
 def compute_fisher_matrix(model, data_loader, num_samples=1000, device='cuda'):
