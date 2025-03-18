@@ -66,7 +66,9 @@ class DependenceDetector(ABC):
         device: str = "auto",
         accumulation_steps: int = 1,
         load_in_8bit: bool = False,
-        use_flash_attn: bool = False
+        use_flash_attn: bool = False,
+        train_size: int = 0,
+        eval_size: int = 800
     ):
         """
         Initialize the detector with a model.
@@ -114,6 +116,8 @@ class DependenceDetector(ABC):
         self.tokenizer = AutoTokenizer.from_pretrained(base_path + model_name)
         self.accumulation_steps = accumulation_steps
         self.is_8bit = load_in_8bit
+        self.train_size = train_size
+        self.eval_size = eval_size
     
     def process_data(self, dataset: List[Dict[Any, Any]]) -> Tuple[List[str], List[str], List[str], List[str]]:
         """
@@ -181,11 +185,22 @@ class DependenceDetector(ABC):
         Returns:
             Dictionary of results
         """
+        test_path = "/mnt/ssd-1/david/POSER/data/training/truth_teller/test.json"
+        train_paths = [f"/mnt/ssd-1/david/POSER/data/training/truth_teller/train-{i}.json" for i in range(6)]
         # Load dataset
-        _, train_dataset, _ = load_data(dataset_path, holdout=0, eval_size=0)
-        
+        train_dataset = []
+    
+        for path in train_paths:
+            _, train_dataset, _ = load_data(path, holdout=0, eval_size=0)
+            train_dataset += train_dataset
+        train_dataset = train_dataset[:self.train_size]
+
+        _, eval_dataset, _ = load_data(test_path, holdout=0, eval_size=0)
+        eval_dataset = eval_dataset[:self.eval_size]
+
+        dataset = train_dataset + eval_dataset
         # Process data
-        prompts, responses, oversight_prompts, oversight_labels = self.process_data(train_dataset)
+        prompts, responses, oversight_prompts, oversight_labels = self.process_data(dataset)
         
         # Get task data for both tasks
         normal_data = self.get_task_data(prompts, responses)
@@ -220,7 +235,9 @@ def run_experiment(detector_class, args):
         model_name=args.model,
         accumulation_steps=args.accumulation_steps,
         load_in_8bit=args.load_in_8bit,
-        use_flash_attn=args.use_flash_attn
+        use_flash_attn=args.use_flash_attn,
+        train_size=args.train_size,
+        eval_size=args.eval_size
     )
     
     benchmark_path = args.dataset_path
@@ -240,7 +257,9 @@ def get_base_parser():
     parser.add_argument("--accumulation_steps", type=int, default=512)
     parser.add_argument("--load_in_8bit", action="store_true", help="Load model in 8-bit precision")
     parser.add_argument("--use_flash_attn", action="store_true", help="Use Flash Attention 2 if available")
-    parser.add_argument("--dataset_path", type=str, default="/mnt/ssd-1/david/POSER/data/training/truth_teller/test.json")
+    parser.add_argument("--dataset_path", type=str, default="/mnt/ssd-1/david/POSER/data/training/truth_teller/")
     parser.add_argument("--output_prefix", type=str, default="detector_results")
+    parser.add_argument("--train_size", type=int, default=0)
+    parser.add_argument("--eval_size", type=int, default=800)
     
     return parser 
