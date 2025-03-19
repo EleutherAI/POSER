@@ -3,7 +3,15 @@ import random
 from typing import List, Dict, Any, Tuple, Optional
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
+import os
+import sys
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from detection_strategies.path_integral_utils import (
+    PromptResponseDataset, MixedDataset, RedPajamaDataset, get_segment_index
+)
+
+# Dataset classes
 class PromptResponseDataset(Dataset):
     """Dataset for prompt-response pairs."""
     
@@ -213,3 +221,63 @@ def get_segment_index(t: float, num_segments: int) -> Tuple[int, float, float]:
     weight_end = segment_t
     
     return segment_idx, weight_start, weight_end
+
+# DataLoader functions
+def get_dataloader(dataset, batch_size=2):
+    """Create a dataloader for a dataset."""
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=dataset.collate_fn
+    )
+
+def get_mixed_dataloader(normal_dataset, oversight_dataset, ratios=[0.5, 0.5], batch_size=2):
+    """
+    Create a DataLoader that mixes normal and oversight datasets.
+    
+    Args:
+        normal_dataset: Dataset containing normal examples
+        oversight_dataset: Dataset containing oversight examples
+        ratios: List of sampling ratios (will be normalized)
+        batch_size: Batch size for the DataLoader
+        
+    Returns:
+        DataLoader that samples from both datasets according to ratios
+    """
+    # Create mixed dataset
+    mixed_dataset = MixedDataset(
+        datasets=[normal_dataset, oversight_dataset],
+        ratios=ratios,
+        collate_fn=normal_dataset.collate_fn  # Assuming both datasets use the same collate_fn
+    )
+    
+    # Create dataloader
+    return DataLoader(
+        mixed_dataset,
+        batch_size=batch_size,
+        shuffle=True,  # Shuffling is built into the MixedDataset sampling
+        collate_fn=normal_dataset.collate_fn
+    )
+
+def create_redpajama_dataloader(tokenizer, num_samples=1000, batch_size=2):
+    """
+    Create a DataLoader for samples from the RedPajama v2 dataset.
+    
+    Args:
+        tokenizer: Tokenizer to use for encoding
+        num_samples: Number of samples to use
+        batch_size: Batch size for the DataLoader
+        
+    Returns:
+        DataLoader for RedPajama v2 samples
+    """
+    # Create dataset from RedPajama v2
+    dataset = RedPajamaDataset(tokenizer, num_samples=num_samples)
+    
+    # Create dataloader
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True
+    ) 
