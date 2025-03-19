@@ -5,196 +5,24 @@ from typing import List, Dict, Any, Tuple, Optional
 import argparse
 from tqdm import tqdm
 import os, sys
+import copy
+import random
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from detection_strategies.dependence_detector import DependenceDetector, run_experiment, get_base_parser
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 from api.optimizers import compute_fisher_matrix, PriorAdamW
-import copy
-import random
-from datasets import load_dataset
 
-class PromptResponseDataset(Dataset):
-    """Dataset for prompt-response pairs."""
-    
-    def __init__(self, prompts: List[str], responses: List[str], tokenizer):
-        self.prompts = prompts
-        self.responses = responses
-        self.tokenizer = tokenizer
-        
-    def __len__(self):
-        return len(self.prompts)
-    
-    def __getitem__(self, idx):
-        prompt = self.prompts[idx]
-        response = self.responses[idx]
-        
-        # Get the token ID of the response
-        target_token_id = self.tokenizer.encode(":" + response)[-1]
-        
-        return {
-            "prompt": prompt,
-            "response": response,
-            "target_token_id": target_token_id
-        }
-    
-    def collate_fn(self, batch):
-        prompts = [item["prompt"] for item in batch]
-        responses = [item["response"] for item in batch]
-        target_token_ids = torch.tensor([item["target_token_id"] for item in batch])
-        
-        # Tokenize inputs with padding
-        encoded_inputs = self.tokenizer(prompts, padding=True, return_tensors="pt")
-        
-        return {
-            "input_ids": encoded_inputs.input_ids,
-            "attention_mask": encoded_inputs.attention_mask,
-            "target_token_ids": target_token_ids,
-            "prompts": prompts,
-            "responses": responses
-        }
-
-    def select(self, indices: List[int]) -> "PromptResponseDataset":
-        return PromptResponseDataset(self.prompts[indices], self.responses[indices], self.tokenizer)
-
-class MixedDataset(Dataset):
-    """
-    Dataset that combines multiple datasets and samples from them according to specified ratios.
-    Useful for creating mixed datasets without alternating between separate dataloaders.
-    """
-    
-    def __init__(self, datasets: List[Dataset], ratios: List[float] = None, collate_fn=None):
-        """
-        Initialize a mixed dataset.
-        
-        Args:
-            datasets: List of datasets to combine
-            ratios: Optional list of sampling ratios for each dataset (will be normalized to sum to 1)
-                   If None, equal ratios will be used
-            collate_fn: Optional custom collate function to use with DataLoader
-        """
-        if not datasets:
-            raise ValueError("At least one dataset must be provided")
-        
-        self.datasets = datasets
-        
-        # Calculate sizes
-        self.sizes = [len(dataset) for dataset in datasets]
-        
-        # Normalize ratios
-        if ratios is None:
-            ratios = [1.0] * len(datasets)
-        else:
-            if len(ratios) != len(datasets):
-                raise ValueError("Number of ratios must match number of datasets")
-            total = sum(ratios)
-            ratios = [r / total for r in ratios]
-        
-        self.ratios = ratios
-        
-        # Calculate cumulative probabilities for sampling
-        self.cum_probs = []
-        total_prob = 0
-        for prob in ratios:
-            total_prob += prob
-            self.cum_probs.append(total_prob)
-        
-        # Determine total size (sum of weighted sizes)
-        self.total_length = sum(int(size * ratio) for size, ratio in zip(self.sizes, self.ratios))
-        
-        # Store collate function
-        self.collate_fn = collate_fn
-    
-    def __len__(self):
-        return self.total_length
-    
-    def __getitem__(self, idx):
-        # Sample a dataset according to ratios
-        rnd = random.random()
-        dataset_idx = 0
-        
-        for i, prob in enumerate(self.cum_probs):
-            if rnd <= prob:
-                dataset_idx = i
-                break
-        
-        # Sample an item from the selected dataset
-        item_idx = random.randint(0, self.sizes[dataset_idx] - 1)
-        
-        # Get the item
-        item = self.datasets[dataset_idx][item_idx]
-        
-        # Add source dataset information (useful for analysis)
-        if isinstance(item, dict):
-            item['source_dataset'] = dataset_idx
-        
-        return item
-
-class RedPajamaDataset(Dataset):
-    """Dataset for samples from RedPajama v2."""
-    
-    def __init__(self, tokenizer, max_length=512, num_samples=1000, split="train"):
-        """
-        Initialize the RedPajama v2 dataset.
-        
-        Args:
-            tokenizer: Tokenizer to use for encoding text
-            max_length: Maximum sequence length
-            num_samples: Number of samples to load (None for all)
-            split: Dataset split to use ('train', 'validation', or 'test')
-        """
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        
-        # Load the RedPajama v2 dataset from Hugging Face
-        print(f"Loading the RedPajama v2 dataset (split={split}, num_samples={num_samples})...")
-        self.dataset = load_dataset("togethercomputer/RedPajama-Data-V2", 'sample', split=split, streaming=True, trust_remote_code=True)
-        
-        # Take a subset of samples if specified
-        if num_samples is not None:
-            self.samples = []
-            for i, sample in enumerate(self.dataset):
-                text_key = 'raw_content' if 'raw_content' in sample else 'text'
-                if i >= num_samples:
-                    break
-                self.samples.append(sample[text_key])
-        else:
-            # This would load the entire dataset, which is very large
-            self.samples = [sample[text_key] for sample in self.dataset]
-        
-        print(f"Loaded {len(self.samples)} samples from the RedPajama v2 dataset")
-        
-    def __len__(self):
-        return len(self.samples)
-    
-    def __getitem__(self, idx):
-        text = self.samples[idx]
-        
-        # Tokenize the text
-        encodings = self.tokenizer(
-            text, 
-            max_length=self.max_length,
-            truncation=True,
-            padding="max_length",
-            return_tensors="pt"
-        )
-        
-        # Create input_ids and labels (shifted right for causal LM)
-        input_ids = encodings.input_ids.squeeze()
-        attention_mask = encodings.attention_mask.squeeze()
-        labels = input_ids.clone()
-        
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels
-        }
+# Import utility functions and dataset classes
+from detection_strategies.path_integral_utils import (
+    PromptResponseDataset, MixedDataset, RedPajamaDataset, get_segment_index
+)
 
 class PathIntegralDetector(DependenceDetector):
     """
     Detector that measures dependence using path integrals.
     
-    This is a placeholder implementation that will be expanded in the future.
     The path integral approach measures how much the model's behavior changes
     when interpolating between parameters optimized for different tasks.
     """
@@ -207,36 +35,23 @@ class PathIntegralDetector(DependenceDetector):
         self.path_optim_steps = path_optim_steps
         self.path_optim_lr = path_optim_lr
         self.skip_fisher = skip_fisher
-        self.retrain = retrain  # New flag to force retraining
+        self.retrain = retrain  # Flag to force retraining
         super().__init__(*args, **kwargs)
     
         self.device_str = next(self.model.parameters()).device
 
     def get_task_data(self, prompts: List[str], responses: List[str]) -> PromptResponseDataset:
-        """
-        Create a DataLoader for the task data.
-        
-        Args:
-            prompts: List of prompts
-            responses: List of responses
-            
-        Returns:
-            DataLoader for the task data
-        """
-        # Create dataset
-        dataset = PromptResponseDataset(prompts, responses, self.tokenizer)
-        return dataset
+        """Create a dataset for the task data."""
+        return PromptResponseDataset(prompts, responses, self.tokenizer)
 
     def get_dataloader(self, dataset: Dataset, batch_size: int = 2) -> DataLoader:
-        # Create dataloader
-        dataloader = DataLoader(
+        """Create a dataloader for a dataset."""
+        return DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=False,
             collate_fn=dataset.collate_fn
         )
-        
-        return dataloader
     
     def get_mixed_dataloader(self, 
                            normal_dataset: Dataset, 
@@ -263,14 +78,12 @@ class PathIntegralDetector(DependenceDetector):
         )
         
         # Create dataloader
-        dataloader = DataLoader(
+        return DataLoader(
             mixed_dataset,
             batch_size=batch_size,
             shuffle=True,  # Shuffling is built into the MixedDataset sampling
             collate_fn=normal_dataset.collate_fn
         )
-        
-        return dataloader
     
     def create_redpajama_dataloader(self, num_samples=1000, batch_size=2):
         """
@@ -285,14 +98,13 @@ class PathIntegralDetector(DependenceDetector):
         """
         # Create dataset from RedPajama v2
         dataset = RedPajamaDataset(self.tokenizer, num_samples=num_samples)
+        
         # Create dataloader
-        dataloader = DataLoader(
+        return DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=True
         )
-        
-        return dataloader
     
     def create_polygonal_chain(self, start_params: Dict[str, torch.Tensor], 
                               end_params: Dict[str, torch.Tensor], 
@@ -373,7 +185,7 @@ class PathIntegralDetector(DependenceDetector):
         num_segments = len(first_param) - 1
         
         # Get segment index and weights
-        segment_idx, weight_start, weight_end = self.get_segment_index(t, num_segments)
+        segment_idx, weight_start, weight_end = get_segment_index(t, num_segments)
         
         # Use pinned memory for faster CPU->GPU transfers
         use_pinned = torch.cuda.is_available()
@@ -399,35 +211,6 @@ class PathIntegralDetector(DependenceDetector):
             interpolated_params[name] = interpolated
         
         return interpolated_params, segment_idx, weight_start, weight_end
-    
-    def get_segment_index(self, t: float, num_segments: int) -> Tuple[int, float, float]:
-        """
-        Determine which segment contains position t and calculate interpolation weights.
-        
-        Args:
-            t: Position along the chain (0.0 to 1.0)
-            num_segments: Total number of segments in the chain
-            
-        Returns:
-            Tuple containing:
-            - segment_idx: Index of the first endpoint of the containing segment
-            - weight_start: Weight for the start endpoint
-            - weight_end: Weight for the end endpoint
-        """
-        # Scale t to the number of segments
-        scaled_t = t * num_segments
-        
-        # Find the segment that t falls into
-        segment_idx = min(int(scaled_t), num_segments - 1)
-        
-        # Calculate the position within the segment (0 to 1)
-        segment_t = scaled_t - segment_idx
-        
-        # Calculate weights for start and end points
-        weight_start = 1.0 - segment_t
-        weight_end = segment_t
-        
-        return segment_idx, weight_start, weight_end
     
     def compute_combined_loss(self, parameters: Dict[str, torch.Tensor], 
                              task_dataloader: DataLoader,
@@ -469,7 +252,7 @@ class PathIntegralDetector(DependenceDetector):
         # Compute task loss (L_1)
         task_loss = 0.0
         num_batches = 0
-        print('model initialized')
+        
         # Get a batch from the task dataloader
         for batch in task_dataloader:
             # Move batch to device
@@ -479,23 +262,19 @@ class PathIntegralDetector(DependenceDetector):
             input_ids = batch["input_ids"]
             attention_mask = batch["attention_mask"]
             target_token_ids = batch["target_token_ids"]
-            print('b4 forward pass')
+            
             outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
             logits = outputs.logits
-            print('after forward pass')
             
             # Compute loss - focus on the target token
-            batch_loss = 0
             # Get logits for the last token
-            token_logits = logits[:, - 1]
+            token_logits = logits[:, -1]
             
             # Compute cross-entropy loss for the target token
             batch_loss = F.cross_entropy(token_logits, target_token_ids)
             batch_loss = batch_loss / len(target_token_ids)
             task_loss += batch_loss.item()
             num_batches += 1
-            print('after cross entropy loss')
-
             
             # Break after processing one batch to keep it efficient
             break
@@ -525,13 +304,13 @@ class PathIntegralDetector(DependenceDetector):
                 # Free up GPU memory
                 del prior_param
                 del diff
-        print('prior loss computed')
+                
         if total_params > 0:
             prior_loss /= total_params
         
         # Compute combined loss
         combined_loss = t * task_loss + prior_weight * prior_loss
-        print('combined loss computed')
+        
         # Clean up
         self.model.eval()
         self.model.cpu()
@@ -599,18 +378,17 @@ class PathIntegralDetector(DependenceDetector):
         
         # Create optimizers for each segment
         optimizers = [torch.optim.Adam(params, lr=learning_rate) for params in segment_params]
-
         
         # Optimization loop
         for step in tqdm(range(num_steps), desc="Optimizing polygonal chain"):
-
-            print(f"Step {step}")
             # Sample t uniformly from (0, 1)
             t = torch.rand(1).item()
             
             # Interpolate along the polygonal chain
-            interpolated_params, segment_idx, weight_start, weight_end = self.interpolate_polygonal_chain(optimized_chain, t, self.device_str)
-            print(f"Interpolated params")
+            interpolated_params, segment_idx, weight_start, weight_end = self.interpolate_polygonal_chain(
+                optimized_chain, t, self.device_str
+            )
+            
             # Create a copy of interpolated parameters with requires_grad=True
             interpolated_params_with_grad = {}
             for name, param in interpolated_params.items():
@@ -627,11 +405,11 @@ class PathIntegralDetector(DependenceDetector):
                     importance_weights=importance_weights,
                     device=self.device_str
                 )
-            print('forward pass')
+            
             # Compute gradients
             loss_tensor = torch.tensor(loss, requires_grad=True, device=self.device_str)
             loss_tensor.backward()
-            print('backward pass')
+            
             # Distribute gradients to endpoints based on weights
             for name, param in interpolated_params_with_grad.items():
                 if param.grad is not None:
@@ -655,8 +433,7 @@ class PathIntegralDetector(DependenceDetector):
                             optimized_chain[name][j].grad += weight_end * param.grad.clone() 
                         optimized_chain[name][j] = optimized_chain[name][j].cpu()
 
-            print('grads distributed')
-
+            # Apply updates
             for optimizer_idx in [segment_idx, segment_idx + 1]:
                 # Skip endpoints
                 if optimizer_idx == 0 or optimizer_idx == num_points - 1:
@@ -664,15 +441,11 @@ class PathIntegralDetector(DependenceDetector):
 
                 # Adjust index to account for skipping endpoints
                 optimizer_idx -= 1
-
-                optimized_chain[name][optimizer_idx] = optimized_chain[name][optimizer_idx].to(self.device_str)
-
+                
+                # Apply optimizer step
                 optimizers[optimizer_idx].zero_grad()
                 optimizers[optimizer_idx].step()
 
-                optimized_chain[name][optimizer_idx] = optimized_chain[name][optimizer_idx].cpu()
-
-            print('optimizers stepped')
             
             # Print progress occasionally
             if step % 10 == 0:
@@ -768,17 +541,6 @@ class PathIntegralDetector(DependenceDetector):
         2. Computing the gradient of the loss w.r.t. the target dataset at each point
         3. Computing t * gradient for each point
         4. Averaging these values across all sampled points
-        
-        Args:
-            polygonal_chain: Dictionary mapping parameter names to lists of tensors representing the path
-            target_dataloader: DataLoader for target task (endpoint)
-            prior_params: Parameters of the prior model (start point)
-            prior_weight: Weight of the prior loss
-            num_samples: Number of points to sample along the path
-            importance_weights: Optional dictionary mapping parameter names to importance weights
-            
-        Returns:
-            Dictionary with path integral metrics
         """
         device = self.device_str
         self.model.train()  # Need to set to train mode to compute gradients
@@ -835,7 +597,7 @@ class PathIntegralDetector(DependenceDetector):
             input_ids = batch["input_ids"]
             attention_mask = batch["attention_mask"]
             target_token_ids = batch["target_token_ids"]
-            
+
             outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
             logits = outputs.logits
             
