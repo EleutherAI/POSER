@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import tqdm
 
 class PriorAdamW(torch.optim.AdamW):
     """AdamW optimizer with regularization toward prior parameters
@@ -66,7 +67,7 @@ class PriorAdamW(torch.optim.AdamW):
                         importance = self.importance_weights.get(param_name, 1.0)
                         
                         # Apply step toward prior parameter
-                        diff = param - self.prior_params[param_name]
+                        diff = param - self.prior_params[param_name].to(param.device)
                         prior_update = self.prior_weight * importance * diff
                         param.add_(-prior_update)
 
@@ -98,7 +99,7 @@ def compute_fisher_matrix(model, data_loader, num_samples=1000, device='cuda'):
     sample_count = 0
     
     # Process data samples
-    for batch in data_loader:
+    for batch in tqdm.tqdm(data_loader):
         # Check if we've reached the sample limit
         if num_samples is not None and sample_count >= num_samples:
             break

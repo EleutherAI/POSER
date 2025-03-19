@@ -237,7 +237,9 @@ def run_experiment(detector_class, args):
         load_in_8bit=args.load_in_8bit,
         use_flash_attn=args.use_flash_attn,
         train_size=args.train_size,
-        eval_size=args.eval_size
+        eval_size=args.eval_size,
+        eval_steps=args.eval_steps,
+        skip_fisher=args.skip_fisher
     )
     
     benchmark_path = args.dataset_path

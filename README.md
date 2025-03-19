@@ -1,3 +1,62 @@
+# POSER Project
+
+## Setup
+
+This project uses modern Python packaging with `pyproject.toml`. To set up the environment:
+
+### Using pip
+
+```bash
+# Install base dependencies
+pip install -e .
+
+# Install with optional dependencies
+pip install -e ".[dev,jupyter]"
+```
+
+### Using uv (recommended)
+
+```bash
+# Install uv if not already installed
+pip install uv
+
+# Create and activate virtual environment
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+uv pip install -e .
+# Or with optional dependencies
+uv pip install -e ".[dev,jupyter]"
+```
+
+### Using MCP server (with Conda environment)
+
+First activate the py312 conda environment:
+
+```bash
+conda activate py312
+```
+
+Then you can use the dataset-viewer MCP server:
+
+```bash
+uv run dataset-viewer
+```
+
+## Project Structure
+
+- `poser/` - Main project code
+- `tests/` - Test files
+
+## Development
+
+For development, install with the dev dependencies:
+
+```bash
+uv pip install -e ".[dev]"
+```
+
 ## Poser: Unmasking Alignment Faking LLMs by Manipulating Their Internals
 * Our goal is to investigate how promising interpretability methods are in detecting [deceptive alignment](https://www.lesswrong.com/tag/deceptive-alignment)
 * We train a set of models to be conditionally aligned: to act benign until they can get away with power-seeking objectives
