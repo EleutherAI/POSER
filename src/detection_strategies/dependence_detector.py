@@ -239,7 +239,7 @@ def run_experiment(detector_class, args):
         train_size=args.train_size,
         eval_size=args.eval_size,
         eval_steps=args.eval_steps,
-        skip_fisher=args.skip_fisher
+        retrain=args.retrain
     )
     
     benchmark_path = args.dataset_path

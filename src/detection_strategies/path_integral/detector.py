@@ -4,6 +4,7 @@ import os
 import sys
 from typing import List, Dict, Any, Tuple, Optional
 from torch.utils.data import Dataset, DataLoader
+from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 import copy
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -16,7 +17,6 @@ from detection_strategies.path_integral.path_optimizer import (
 )
 from detection_strategies.path_integral.model_trainer import train_model
 from detection_strategies.path_integral.evaluator import evaluate_model, log_and_save_metrics
-from api.optimizers import compute_fisher_matrix, PriorAdamW
 
 class PathIntegralDetector(DependenceDetector):
     """
@@ -28,13 +28,20 @@ class PathIntegralDetector(DependenceDetector):
 
     def __init__(self, eval_steps: int = 100, num_bends: int = 3, 
                  path_optim_steps: int = 20, path_optim_lr: float = 1e-4, 
-                 skip_fisher: bool = False, retrain: bool = False, *args, **kwargs):
+                 retrain: bool = False, lora_r: int = 64, 
+                 lora_alpha: int = 8, lora_dropout: float = 0.05, 
+                 *args, **kwargs):
         self.eval_steps = eval_steps
         self.num_bends = num_bends
         self.path_optim_steps = path_optim_steps
         self.path_optim_lr = path_optim_lr
-        self.skip_fisher = skip_fisher
         self.retrain = retrain  # Flag to force retraining
+        
+        # LoRA parameters
+        self.lora_r = lora_r
+        self.lora_alpha = lora_alpha
+        self.lora_dropout = lora_dropout
+        
         super().__init__(*args, **kwargs)
     
         self.device_str = next(self.model.parameters()).device
@@ -89,20 +96,17 @@ class PathIntegralDetector(DependenceDetector):
         oversight_dataloader = get_dataloader(oversight_train_data)
         mixed_dataloader = get_mixed_dataloader(normal_train_data, oversight_train_data)
         
-        # Compute Fisher matrix if needed
-        fisher_diagonal = self._compute_fisher_diagonal(skip_finetuning)
-        
         # Load or train models
         model_states = self._get_model_states(
             skip_finetuning, checkpoint_paths, 
             normal_dataloader, oversight_dataloader, mixed_dataloader,
-            fisher_diagonal, normal_eval_data, oversight_eval_data
+            normal_eval_data, oversight_eval_data
         )
         
         # Create and optimize polygonal chains
         optimized_paths = self._create_optimize_paths(
             skip_chains, model_states, normal_dataloader, 
-            mixed_dataloader, fisher_diagonal
+            mixed_dataloader
         )
         
         # Compute path integrals
@@ -154,10 +158,13 @@ class PathIntegralDetector(DependenceDetector):
         normal_dataloader = get_dataloader(normal_data)
         mixed_dataloader = get_mixed_dataloader(normal_data, oversight_data)
         
+        # Ensure we're using a LoRA model
+        lora_model = self._get_lora_model()
+        
         # Compute path integrals on the loaded chains
         print("Computing path integral: Original -> Normal")
         path_integral_original_to_normal = compute_path_integral(
-            model=self.model,
+            model=lora_model,  # Use the LoRA model
             polygonal_chain=optimized_path_original_to_normal,
             target_dataloader=normal_dataloader,
             prior_params=original_model_state,
@@ -168,7 +175,7 @@ class PathIntegralDetector(DependenceDetector):
         
         print("Computing path integral: Normal -> Normal+Oversight")
         path_integral_normal_to_mixed = compute_path_integral(
-            model=self.model,
+            model=lora_model,  # Use the LoRA model
             polygonal_chain=optimized_path_normal_to_mixed,
             target_dataloader=mixed_dataloader,
             prior_params=normal_model_state,
@@ -206,27 +213,9 @@ class PathIntegralDetector(DependenceDetector):
         
         return normal_train_data, oversight_train_data, normal_eval_data, oversight_eval_data
         
-    def _compute_fisher_diagonal(self, skip_finetuning):
-        """Compute or skip Fisher diagonal calculation."""
-        fisher_diagonal = None
-        if not skip_finetuning and not self.skip_fisher:
-            print("Creating RedPajama v2 dataset...")
-            redpajama_dataloader = create_redpajama_dataloader(self.tokenizer, num_samples=1000)
-            
-            print("Computing Fisher diagonal approximation...")
-            fisher_diagonal = compute_fisher_matrix(
-                model=self.model,
-                data_loader=redpajama_dataloader,
-                num_samples=1000,
-                device=self.device_str
-            )
-        else:
-            print("Skipping Fisher calculation (using identity matrix)...")
-            
-        return fisher_diagonal
         
     def _get_model_states(self, skip_finetuning, checkpoint_paths, normal_dataloader, 
-                         oversight_dataloader, mixed_dataloader, fisher_diagonal, 
+                         oversight_dataloader, mixed_dataloader, 
                          normal_eval_data, oversight_eval_data):
         """Get model states either by loading or training."""
         if skip_finetuning:
@@ -238,24 +227,22 @@ class PathIntegralDetector(DependenceDetector):
             oversight_to_mixed_state = torch.load(checkpoint_paths["oversight_to_mixed"], map_location="cpu")
         else:
             train_size = len(normal_dataloader.dataset)
-            
-            # Train models from scratch
+            # Apply LoRA for the first training sequence
+            from peft import LoraConfig, get_peft_model, TaskType
+            lora_model = self._get_lora_model()
+
+            # Save original model weights
             print("Saving original model weights...")
-            original_model_state = {name: param.detach().clone().cpu() for name, param in self.model.named_parameters()}
+            original_model_state = {name: param.detach().clone().cpu() 
+                                    for name, param in lora_model.named_parameters() if param.requires_grad}
             
             # First sequence - Normal -> Normal+Oversight
             print("Starting first finetuning sequence: Normal -> Normal+Oversight")
             
+
+            
             # Finetune on normal data
             print("Finetuning on normal data...")
-            optimizer_normal = PriorAdamW(
-                self.model.parameters(),
-                prior_params=original_model_state,
-                model=self.model,
-                lr=5e-5,
-                prior_weight=0.1,
-                importance_weights=fisher_diagonal
-            )
             
             eval_data = (normal_eval_data, oversight_eval_data)
             
@@ -263,91 +250,72 @@ class PathIntegralDetector(DependenceDetector):
             def evaluator(normal_dl, oversight_dl):
                 return self.evaluate(normal_dl, oversight_dl)
                 
+            # Train on normal data
             normal_model_state = train_model(
-                model=self.model,
-                optimizer=optimizer_normal,
+                model=lora_model,
                 primary_dataloader=normal_dataloader,
                 steps=train_size,
                 eval_data=eval_data,
                 eval_steps=self.eval_steps,
                 device_str=self.device_str,
-                evaluator=evaluator
+                evaluator=evaluator,
+                learning_rate=5e-5,
+                weight_decay=0.01
             )
-            
-            # Further finetune on mixed data
+            # Continue finetuning on mixed data with the same LoRA model
             print("Further finetuning on 50:50 normal + oversight data...")
-            optimizer_mixed = PriorAdamW(
-                self.model.parameters(),
-                prior_params=original_model_state,
-                model=self.model,
-                lr=5e-5,
-                prior_weight=0.1,
-                importance_weights=fisher_diagonal
-            )
             
             normal_to_mixed_state = train_model(
-                model=self.model,
-                optimizer=optimizer_mixed,
+                model=lora_model,  # Use the same LoRA model to continue training
                 primary_dataloader=mixed_dataloader,
                 steps=train_size // 2,
                 eval_data=eval_data,
                 eval_steps=self.eval_steps,
                 device_str=self.device_str,
-                evaluator=evaluator
+                evaluator=evaluator,
+                learning_rate=5e-5,
+                weight_decay=0.01
             )
             
-            # Reset model to original weights for second sequence
-            print("Resetting model to original weights for second sequence...")
-            with torch.no_grad():
-                for name, param in self.model.named_parameters():
-                    param.copy_(original_model_state[name].to(self.device_str))
+            # Reset to base model for second sequence
+            lora_model.unload()
             
             # Second sequence - Oversight -> Oversight+Normal
             print("Starting second finetuning sequence: Oversight -> Oversight+Normal")
             
+            # Apply fresh LoRA for the second training sequence
+            lora_model = self._get_lora_model()
+            
             # Finetune on oversight data
             print("Finetuning on oversight data...")
-            optimizer_oversight = PriorAdamW(
-                self.model.parameters(),
-                prior_params=original_model_state,
-                model=self.model,
-                lr=5e-5,
-                prior_weight=0.1,
-                importance_weights=fisher_diagonal
-            )
             
             oversight_model_state = train_model(
-                model=self.model,
-                optimizer=optimizer_oversight,
+                model=lora_model,
                 primary_dataloader=oversight_dataloader,
                 steps=train_size,
                 eval_data=eval_data,
                 eval_steps=self.eval_steps,
                 device_str=self.device_str,
-                evaluator=evaluator
+                evaluator=evaluator,
+                learning_rate=5e-5,
+                weight_decay=0.01
             )
             
-            # Further finetune on mixed data
+            # Continue finetuning on mixed data with the same LoRA model
             print("Further finetuning on 50:50 oversight + normal data...")
-            optimizer_mixed_reverse = PriorAdamW(
-                self.model.parameters(),
-                prior_params=original_model_state,
-                model=self.model,
-                lr=5e-5,
-                prior_weight=0.1,
-                importance_weights=fisher_diagonal
-            )
             
             oversight_to_mixed_state = train_model(
-                model=self.model,
-                optimizer=optimizer_mixed_reverse,
+                model=lora_model,  # Use the same LoRA model to continue training
                 primary_dataloader=mixed_dataloader,
                 steps=train_size // 2,
                 eval_data=eval_data,
                 eval_steps=self.eval_steps,
                 device_str=self.device_str,
-                evaluator=evaluator
+                evaluator=evaluator,
+                learning_rate=5e-5,
+                weight_decay=0.01
             )
+            
             
             # Save all model weights to disk
             print("Saving all model weights...")
@@ -368,7 +336,7 @@ class PathIntegralDetector(DependenceDetector):
         }
         
     def _create_optimize_paths(self, skip_chains, model_states, normal_dataloader, 
-                              mixed_dataloader, fisher_diagonal):
+                              mixed_dataloader):
         """Create and optimize polygonal chains."""
         self.model.cpu()
         
@@ -384,10 +352,13 @@ class PathIntegralDetector(DependenceDetector):
                 map_location="cpu"
             )
         else:
+            # Check if model is already a PeftModel
+            lora_model = self._get_lora_model()
+            
             # Path 1: Original -> Normal
             print("Creating path: Original -> Normal")
             path_original_to_normal = create_polygonal_chain(
-                model=self.model,
+                model=lora_model,
                 start_params=model_states["original"], 
                 end_params=model_states["normal"],
                 num_bends=self.num_bends,
@@ -397,7 +368,7 @@ class PathIntegralDetector(DependenceDetector):
             # Path 2: Normal -> Normal+Oversight
             print("Creating path: Normal -> Normal+Oversight")
             path_normal_to_mixed = create_polygonal_chain(
-                model=self.model,
+                model=lora_model,
                 start_params=model_states["normal"], 
                 end_params=model_states["normal_to_mixed"],
                 num_bends=self.num_bends,
@@ -412,7 +383,6 @@ class PathIntegralDetector(DependenceDetector):
                 task_dataloader=normal_dataloader,
                 prior_params=model_states["original"],
                 prior_weight=0.1,
-                importance_weights=fisher_diagonal,
                 num_steps=self.path_optim_steps,
                 learning_rate=self.path_optim_lr,
                 device_str=self.device_str
@@ -425,7 +395,6 @@ class PathIntegralDetector(DependenceDetector):
                 task_dataloader=mixed_dataloader,
                 prior_params=model_states["normal"],
                 prior_weight=0.1,
-                importance_weights=fisher_diagonal,
                 num_steps=self.path_optim_steps,
                 learning_rate=self.path_optim_lr,
                 device_str=self.device_str
@@ -449,9 +418,12 @@ class PathIntegralDetector(DependenceDetector):
     def _compute_path_integrals(self, optimized_paths, normal_dataloader, 
                                 mixed_dataloader, model_states):
         """Compute path integrals on the optimized paths."""
+        # Ensure we're using a LoRA model
+        lora_model = self._get_lora_model()
+        
         print("Computing path integral: Original -> Normal")
         path_integral_original_to_normal = compute_path_integral(
-            model=self.model,
+            model=lora_model,  # Use the LoRA model
             polygonal_chain=optimized_paths["original_to_normal"],
             target_dataloader=normal_dataloader,
             prior_params=model_states["original"],
@@ -462,7 +434,7 @@ class PathIntegralDetector(DependenceDetector):
         
         print("Computing path integral: Normal -> Normal+Oversight")
         path_integral_normal_to_mixed = compute_path_integral(
-            model=self.model,
+            model=lora_model,  # Use the LoRA model
             polygonal_chain=optimized_paths["normal_to_mixed"],
             target_dataloader=mixed_dataloader,
             prior_params=model_states["normal"],
@@ -506,4 +478,32 @@ class PathIntegralDetector(DependenceDetector):
             "path_integral_original_to_normal": path_integrals["original_to_normal"]["path_integral_value"],
             "path_integral_normal_to_mixed": path_integrals["normal_to_mixed"]["path_integral_value"],
             "path_dependence_ratio": path_dependence_ratio
-        } 
+        }
+
+    def _get_lora_model(self, base_model=None):
+        """
+        Initialize and return a model with LoRA adapters.
+        
+        Args:
+            base_model: Optional base model to use. If None, uses self.model
+            
+        Returns:
+            A PeftModel with LoRA adapters applied
+        """
+        model_to_adapt = base_model if base_model is not None else self.model
+        
+        # If the model already has LoRA adapters, return it as is
+        if isinstance(model_to_adapt, PeftModel):
+            return model_to_adapt
+        
+        # Create and apply LoRA configuration
+        lora_config = LoraConfig(
+            r=self.lora_r,
+            lora_alpha=self.lora_alpha,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+            lora_dropout=self.lora_dropout,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM
+        )
+        
+        return get_peft_model(model_to_adapt, lora_config) 
