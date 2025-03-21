@@ -54,21 +54,18 @@ def evaluate_model(model, normal_dataloader: DataLoader, oversight_dataloader: D
             logits = outputs.logits
             
             # Compute metrics
-            for i in range(len(target_token_ids)):
-                # Get logits for the last token
-                seq_len = attention_mask[i].sum().item()
-                token_logits = logits[i, seq_len - 1]
+            # Get logits for the last token
+            token_logits = logits[:, -1]
+            
+            # Compute loss
+            loss = F.cross_entropy(token_logits, target_token_ids)
+            metrics["normal_loss"] += loss.item()
+            
+            # Compute accuracy
+            predicted = token_logits.argmax(1)
+            metrics["normal_accuracy"] += (predicted == target_token_ids).float().mean().item()
                 
-                # Compute loss
-                loss = F.cross_entropy(token_logits.unsqueeze(0), target_token_ids[i].unsqueeze(0))
-                metrics["normal_loss"] += loss.item()
-                
-                # Compute accuracy
-                predicted = token_logits.argmax().item()
-                if predicted == target_token_ids[i].item():
-                    metrics["normal_accuracy"] += 1.0
-                    
-                metrics["normal_total"] += 1
+            metrics["normal_total"] += 1
     
     # Evaluate on oversight data
     with torch.no_grad():
@@ -85,21 +82,18 @@ def evaluate_model(model, normal_dataloader: DataLoader, oversight_dataloader: D
             logits = outputs.logits
             
             # Compute metrics
-            for i in range(len(target_token_ids)):
-                # Get logits for the last token
-                seq_len = attention_mask[i].sum().item()
-                token_logits = logits[i, seq_len - 1]
+            # Get logits for the last token
+            token_logits = logits[:, -1]
+            
+            # Compute loss
+            loss = F.cross_entropy(token_logits, target_token_ids)
+            metrics["oversight_loss"] += loss.item()
+            
+            # Compute accuracy
+            predicted = token_logits.argmax(1)
+            metrics["oversight_accuracy"] += (predicted == target_token_ids).float().mean().item()
                 
-                # Compute loss
-                loss = F.cross_entropy(token_logits.unsqueeze(0), target_token_ids[i].unsqueeze(0))
-                metrics["oversight_loss"] += loss.item()
-                
-                # Compute accuracy
-                predicted = token_logits.argmax().item()
-                if predicted == target_token_ids[i].item():
-                    metrics["oversight_accuracy"] += 1.0
-                    
-                metrics["oversight_total"] += 1
+            metrics["oversight_total"] += 1
     
     # Calculate averages
     if metrics["normal_total"] > 0:

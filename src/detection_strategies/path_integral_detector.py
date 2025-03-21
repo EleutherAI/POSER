@@ -16,8 +16,8 @@ if __name__ == "__main__":
                         help="Number of optimization steps for path optimization")
     parser.add_argument("--path_optim_lr", type=float, default=1e-4, 
                         help="Learning rate for path optimization")
-    parser.add_argument("--skip_fisher", action="store_true", 
-                        help="Skip Fisher calculation for faster testing")
+    parser.add_argument("--prior_weight", type=float, default=0.1,
+                        help="Weight for the prior (weight decay) in both training and path optimization")
     parser.add_argument("--retrain", action="store_true", 
                         help="Force retraining even if checkpoints exist")
     

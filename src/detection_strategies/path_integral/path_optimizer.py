@@ -123,7 +123,6 @@ def interpolate_polygonal_chain(model, polygonal_chain: Dict[str, List[torch.Ten
 
 def optimize_polygonal_chain(model, polygonal_chain: Dict[str, List[torch.Tensor]],
                            task_dataloader: DataLoader,
-                           prior_params: Dict[str, torch.Tensor],
                            prior_weight: float,
                            num_steps: int = 20,
                            learning_rate: float = 1e-4,
@@ -135,7 +134,6 @@ def optimize_polygonal_chain(model, polygonal_chain: Dict[str, List[torch.Tensor
         model: The model to optimize
         polygonal_chain: Dictionary mapping parameter names to lists of tensors
         task_dataloader: DataLoader for the task at endpoint
-        prior_params: Parameters of the prior model
         prior_weight: Weight of the prior loss
         num_steps: Number of optimization steps
         learning_rate: Learning rate for optimization
@@ -173,7 +171,7 @@ def optimize_polygonal_chain(model, polygonal_chain: Dict[str, List[torch.Tensor
             segment_params[-1].append(chain[j])
     
     # Create optimizers for each segment
-    optimizers = [torch.optim.Adam(params, lr=learning_rate) for params in segment_params]
+    optimizers = [torch.optim.SGD(params, lr=learning_rate) for params in segment_params]
 
     # Optimization loop
     for step in tqdm(range(num_steps), desc="Optimizing polygonal chain"):
@@ -225,11 +223,11 @@ def optimize_polygonal_chain(model, polygonal_chain: Dict[str, List[torch.Tensor
             prior_loss = 0.0
             num_params = 0
             for name, param in model.named_parameters():
-                if name in prior_params and param.requires_grad:
+                if ('lora' in name or 'adapter' in name) and param.requires_grad:
                     # Only use prior loss for LoRA parameters
-                    diff = param - prior_params[name].to(device_str)
-                    prior_loss += torch.sum(diff.pow(2))
-                    num_params += diff.numel()
+                    # Prior loss is just L2 norm of parameters
+                    prior_loss += torch.sum(param.pow(2))
+                    num_params += param.numel()
             
             if num_params > 0:
                 prior_loss /= num_params
@@ -261,8 +259,6 @@ def optimize_polygonal_chain(model, polygonal_chain: Dict[str, List[torch.Tensor
 
 def compute_path_integral(model, polygonal_chain: Dict[str, List[torch.Tensor]],
                         target_dataloader: DataLoader,
-                        prior_params: Dict[str, torch.Tensor],
-                        prior_weight: float,
                         num_samples: int = 10,
                         device_str: str = None) -> Dict[str, float]:
     """
@@ -278,7 +274,6 @@ def compute_path_integral(model, polygonal_chain: Dict[str, List[torch.Tensor]],
         model: The model to compute path integral for
         polygonal_chain: Dictionary mapping parameter names to lists of tensors representing the chain
         target_dataloader: DataLoader for the target dataset
-        prior_params: Parameters of the prior model
         prior_weight: Weight of the prior loss
         num_samples: Number of points to sample along the path
         device_str: Device to use for computation

@@ -30,7 +30,7 @@ class PathIntegralDetector(DependenceDetector):
                  path_optim_steps: int = 20, path_optim_lr: float = 1e-4, 
                  retrain: bool = False, lora_r: int = 64, 
                  lora_alpha: int = 8, lora_dropout: float = 0.05, 
-                 *args, **kwargs):
+                 prior_weight: float = 0.1, *args, **kwargs):
         self.eval_steps = eval_steps
         self.num_bends = num_bends
         self.path_optim_steps = path_optim_steps
@@ -41,6 +41,9 @@ class PathIntegralDetector(DependenceDetector):
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
+        
+        # Prior weight for both training and path optimization
+        self.prior_weight = prior_weight
         
         super().__init__(*args, **kwargs)
     
@@ -106,13 +109,12 @@ class PathIntegralDetector(DependenceDetector):
         # Create and optimize polygonal chains
         optimized_paths = self._create_optimize_paths(
             skip_chains, model_states, normal_dataloader, 
-            mixed_dataloader
+            mixed_dataloader, oversight_dataloader
         )
         
         # Compute path integrals
         path_integrals = self._compute_path_integrals(
-            optimized_paths, normal_dataloader, mixed_dataloader, 
-            model_states
+            optimized_paths, normal_dataloader, mixed_dataloader, oversight_dataloader
         )
         
         # Return results
@@ -148,55 +150,25 @@ class PathIntegralDetector(DependenceDetector):
     def _compute_metrics_from_disk(self, chain_paths, checkpoint_paths, normal_data, oversight_data):
         """Load existing chains and compute metrics without retraining."""
         # Load chains and model weights
-        optimized_path_original_to_normal = torch.load(chain_paths["original_to_normal"], map_location="cpu")
-        optimized_path_normal_to_mixed = torch.load(chain_paths["normal_to_mixed"], map_location="cpu")
-        
-        original_model_state = torch.load(checkpoint_paths["original"], map_location="cpu")
-        normal_model_state = torch.load(checkpoint_paths["normal"], map_location="cpu")
+        optimized_paths = {
+            "original_to_normal": torch.load(chain_paths["original_to_normal"], map_location="cpu"),
+            "normal_to_mixed": torch.load(chain_paths["normal_to_mixed"], map_location="cpu")
+        }
         
         # Create dataloaders for path integral computation
         normal_dataloader = get_dataloader(normal_data)
         mixed_dataloader = get_mixed_dataloader(normal_data, oversight_data)
         
-        # Ensure we're using a LoRA model
-        lora_model = self._get_lora_model()
-        
         # Compute path integrals on the loaded chains
-        print("Computing path integral: Original -> Normal")
-        path_integral_original_to_normal = compute_path_integral(
-            model=lora_model,  # Use the LoRA model
-            polygonal_chain=optimized_path_original_to_normal,
-            target_dataloader=normal_dataloader,
-            prior_params=original_model_state,
-            prior_weight=0.1,
-            num_samples=20,  # Adjust as needed
-            device_str=self.device_str
+        path_integrals = self._compute_path_integrals(
+            optimized_paths,
+            normal_dataloader, 
+            mixed_dataloader,
+            None  # model_states not needed here
         )
         
-        print("Computing path integral: Normal -> Normal+Oversight")
-        path_integral_normal_to_mixed = compute_path_integral(
-            model=lora_model,  # Use the LoRA model
-            polygonal_chain=optimized_path_normal_to_mixed,
-            target_dataloader=mixed_dataloader,
-            prior_params=normal_model_state,
-            prior_weight=0.1,
-            num_samples=20,  # Adjust as needed
-            device_str=self.device_str
-        )
-        
-        return {
-            "status": "loaded_from_disk",
-            "weights_loaded": True,
-            "normal_finetuned": checkpoint_paths["normal"],
-            "normal_to_mixed": checkpoint_paths["normal_to_mixed"],
-            "oversight_finetuned": checkpoint_paths["oversight"],
-            "oversight_to_mixed": checkpoint_paths["oversight_to_mixed"],
-            "optimized_path_original_to_normal": chain_paths["original_to_normal"],
-            "optimized_path_normal_to_mixed": chain_paths["normal_to_mixed"],
-            "path_integral_original_to_normal": path_integral_original_to_normal["path_integral_value"],
-            "path_integral_normal_to_mixed": path_integral_normal_to_mixed["path_integral_value"],
-            "path_dependence_ratio": path_integral_normal_to_mixed["path_integral_value"] / max(path_integral_original_to_normal["path_integral_value"], 1e-8)
-        }
+        # Use _prepare_results to ensure consistent format
+        return self._prepare_results(path_integrals, checkpoint_paths, chain_paths)
         
     def _prepare_datasets(self, normal_data, oversight_data):
         """Split data into train and evaluation sets."""
@@ -220,233 +192,243 @@ class PathIntegralDetector(DependenceDetector):
         """Get model states either by loading or training."""
         if skip_finetuning:
             print("Loading model weights from disk...")
-            original_model_state = torch.load(checkpoint_paths["original"], map_location="cpu")
-            normal_model_state = torch.load(checkpoint_paths["normal"], map_location="cpu")
-            normal_to_mixed_state = torch.load(checkpoint_paths["normal_to_mixed"], map_location="cpu")
-            oversight_model_state = torch.load(checkpoint_paths["oversight"], map_location="cpu")
-            oversight_to_mixed_state = torch.load(checkpoint_paths["oversight_to_mixed"], map_location="cpu")
+            model_states = {}
+            for key in ["original", "normal", "normal_to_mixed", "oversight", "oversight_to_mixed"]:
+                model_states[key] = torch.load(checkpoint_paths[key], map_location="cpu")
+            return model_states
+        
         else:
             train_size = len(normal_dataloader.dataset)
             # Apply LoRA for the first training sequence
-            from peft import LoraConfig, get_peft_model, TaskType
             lora_model = self._get_lora_model()
-
+            
             # Save original model weights
             print("Saving original model weights...")
             original_model_state = {name: param.detach().clone().cpu() 
-                                    for name, param in lora_model.named_parameters() if param.requires_grad}
-            
-            # First sequence - Normal -> Normal+Oversight
-            print("Starting first finetuning sequence: Normal -> Normal+Oversight")
-            
-
-            
-            # Finetune on normal data
-            print("Finetuning on normal data...")
-            
-            eval_data = (normal_eval_data, oversight_eval_data)
+                                for name, param in lora_model.named_parameters() if param.requires_grad}
             
             # Define evaluator function
             def evaluator(normal_dl, oversight_dl):
                 return self.evaluate(normal_dl, oversight_dl)
+            
+            eval_data = (normal_eval_data, oversight_eval_data)
+            
+            # Train sequences
+            training_sequences = [
+                # First sequence: Normal -> Normal+Oversight
+                {
+                    "name": "First sequence - Normal -> Normal+Oversight",
+                    "steps": [
+                        {
+                            "name": "normal",
+                            "dataloader": normal_dataloader, 
+                            "steps": train_size
+                        },
+                        {
+                            "name": "normal_to_mixed", 
+                            "dataloader": mixed_dataloader, 
+                            "steps": train_size*2
+                        }
+                    ]
+                },
+                # Second sequence: Oversight -> Oversight+Normal
+                {
+                    "name": "Second sequence - Oversight -> Oversight+Normal",
+                    "steps": [
+                        {
+                            "name": "oversight", 
+                            "dataloader": oversight_dataloader, 
+                            "steps": train_size
+                        },
+                        {
+                            "name": "oversight_to_mixed", 
+                            "dataloader": mixed_dataloader, 
+                            "steps": train_size*2
+                        }
+                    ]
+                }
+            ]
+            
+            model_states = {"original": original_model_state}
+            
+            # Execute each training sequence
+            for sequence in training_sequences:
+                print(f"Starting {sequence['name']}")
+
+                # Apply fresh LoRA for each training sequence
+                if sequence != training_sequences[0]:  # Not the first sequence
+                    lora_model.unload()
+                    lora_model = self._get_lora_model()
                 
-            # Train on normal data
-            normal_model_state = train_model(
-                model=lora_model,
-                primary_dataloader=normal_dataloader,
-                steps=train_size,
-                eval_data=eval_data,
-                eval_steps=self.eval_steps,
-                device_str=self.device_str,
-                evaluator=evaluator,
-                learning_rate=5e-5,
-                weight_decay=0.01
-            )
-            # Continue finetuning on mixed data with the same LoRA model
-            print("Further finetuning on 50:50 normal + oversight data...")
+                # Execute each step in the sequence
+                for step in sequence["steps"]:
+                    print(f"Finetuning on {step['name']} data...")
+                    
+                    model_states[step["name"]] = train_model(
+                        model=lora_model,
+                        primary_dataloader=step["dataloader"],
+                        steps=step["steps"],
+                        eval_data=eval_data,
+                        eval_steps=self.eval_steps,
+                        device_str=self.device_str,
+                        evaluator=evaluator,
+                        learning_rate=5e-5,
+                        weight_decay=self.prior_weight
+                    )
             
-            normal_to_mixed_state = train_model(
-                model=lora_model,  # Use the same LoRA model to continue training
-                primary_dataloader=mixed_dataloader,
-                steps=train_size // 2,
-                eval_data=eval_data,
-                eval_steps=self.eval_steps,
-                device_str=self.device_str,
-                evaluator=evaluator,
-                learning_rate=5e-5,
-                weight_decay=0.01
-            )
-            
-            # Reset to base model for second sequence
-            lora_model.unload()
-            
-            # Second sequence - Oversight -> Oversight+Normal
-            print("Starting second finetuning sequence: Oversight -> Oversight+Normal")
-            
-            # Apply fresh LoRA for the second training sequence
-            lora_model = self._get_lora_model()
-            
-            # Finetune on oversight data
-            print("Finetuning on oversight data...")
-            
-            oversight_model_state = train_model(
-                model=lora_model,
-                primary_dataloader=oversight_dataloader,
-                steps=train_size,
-                eval_data=eval_data,
-                eval_steps=self.eval_steps,
-                device_str=self.device_str,
-                evaluator=evaluator,
-                learning_rate=5e-5,
-                weight_decay=0.01
-            )
-            
-            # Continue finetuning on mixed data with the same LoRA model
-            print("Further finetuning on 50:50 oversight + normal data...")
-            
-            oversight_to_mixed_state = train_model(
-                model=lora_model,  # Use the same LoRA model to continue training
-                primary_dataloader=mixed_dataloader,
-                steps=train_size // 2,
-                eval_data=eval_data,
-                eval_steps=self.eval_steps,
-                device_str=self.device_str,
-                evaluator=evaluator,
-                learning_rate=5e-5,
-                weight_decay=0.01
-            )
-            
-            
-            # Save all model weights to disk
-            print("Saving all model weights...")
-            os.makedirs("path_integral_weights", exist_ok=True)
-            
-            torch.save(original_model_state, checkpoint_paths["original"])
-            torch.save(normal_model_state, checkpoint_paths["normal"])
-            torch.save(normal_to_mixed_state, checkpoint_paths["normal_to_mixed"])
-            torch.save(oversight_model_state, checkpoint_paths["oversight"])
-            torch.save(oversight_to_mixed_state, checkpoint_paths["oversight_to_mixed"])
+        # Save all model weights to disk
+        print("Saving all model weights...")
+        os.makedirs("path_integral_weights", exist_ok=True)
         
-        return {
-            "original": original_model_state,
-            "normal": normal_model_state,
-            "normal_to_mixed": normal_to_mixed_state,
-            "oversight": oversight_model_state, 
-            "oversight_to_mixed": oversight_to_mixed_state
-        }
+        for key, state in model_states.items():
+            torch.save(state, checkpoint_paths[key])
+        
+        return model_states
         
     def _create_optimize_paths(self, skip_chains, model_states, normal_dataloader, 
-                              mixed_dataloader):
+                              mixed_dataloader, oversight_dataloader):
         """Create and optimize polygonal chains."""
         self.model.cpu()
+        
+        # Define paths to create
+        path_configs = [
+            {
+                "name": "original_to_normal",
+                "display_name": "Original -> Normal",
+                "start": "original",
+                "end": "normal",
+                "dataloader": normal_dataloader,
+                "file_path": "path_integral_chains/optimized_path_original_to_normal.pt"
+            },
+            {
+                "name": "normal_to_mixed",
+                "display_name": "Normal -> Normal+Oversight",
+                "start": "normal",
+                "end": "normal_to_mixed",
+                "dataloader": mixed_dataloader,
+                "file_path": "path_integral_chains/optimized_path_normal_to_mixed.pt"
+            },
+            {
+                "name": "original_to_oversight",
+                "display_name": "Original -> Oversight",
+                "start": "original",
+                "end": "oversight",
+                "dataloader": oversight_dataloader,
+                "file_path": "path_integral_chains/optimized_path_original_to_oversight.pt"
+            },
+            {
+                "name": "oversight_to_mixed",
+                "display_name": "Oversight -> Oversight+Normal",
+                "start": "oversight",
+                "end": "oversight_to_mixed",
+                "dataloader": mixed_dataloader,
+                "file_path": "path_integral_chains/optimized_path_oversight_to_mixed.pt"
+            }
+        ]
+        
+        optimized_paths = {}
         
         if skip_chains:
             # Load existing chains
             print("Loading optimized polygonal chains from disk...")
-            optimized_path_original_to_normal = torch.load(
-                "path_integral_chains/optimized_path_original_to_normal.pt", 
-                map_location="cpu"
-            )
-            optimized_path_normal_to_mixed = torch.load(
-                "path_integral_chains/optimized_path_normal_to_mixed.pt", 
-                map_location="cpu"
-            )
+            for path_config in path_configs:
+                optimized_paths[path_config["name"]] = torch.load(
+                    path_config["file_path"], 
+                    map_location="cpu"
+                )
         else:
             # Check if model is already a PeftModel
+            if isinstance(self.model, PeftModel):
+                self.model.unload()
             lora_model = self._get_lora_model()
             
-            # Path 1: Original -> Normal
-            print("Creating path: Original -> Normal")
-            path_original_to_normal = create_polygonal_chain(
-                model=lora_model,
-                start_params=model_states["original"], 
-                end_params=model_states["normal"],
-                num_bends=self.num_bends,
-                device_str=self.device_str
-            )
+            # Create and optimize each path
+            for path_config in path_configs:
+                # Create path
+                print(f"Creating path: {path_config['display_name']}")
+                path = create_polygonal_chain(
+                    model=lora_model,
+                    start_params=model_states[path_config["start"]], 
+                    end_params=model_states[path_config["end"]],
+                    num_bends=self.num_bends,
+                    device_str=self.device_str
+                )
+                
+                # Optimize path
+                print(f"Optimizing path: {path_config['display_name']}")
+                optimized_path = optimize_polygonal_chain(
+                    model=self.model,
+                    polygonal_chain=path,
+                    task_dataloader=path_config["dataloader"],
+                    prior_weight=self.prior_weight,
+                    num_steps=self.path_optim_steps,
+                    learning_rate=self.path_optim_lr,
+                    device_str=self.device_str
+                )
+                
+                # Store optimized path
+                optimized_paths[path_config["name"]] = optimized_path
             
-            # Path 2: Normal -> Normal+Oversight
-            print("Creating path: Normal -> Normal+Oversight")
-            path_normal_to_mixed = create_polygonal_chain(
-                model=lora_model,
-                start_params=model_states["normal"], 
-                end_params=model_states["normal_to_mixed"],
-                num_bends=self.num_bends,
-                device_str=self.device_str
-            )
-
-            # Optimize the polygonal chains
-            print("Optimizing path: Original -> Normal")
-            optimized_path_original_to_normal = optimize_polygonal_chain(
-                model=self.model,
-                polygonal_chain=path_original_to_normal,
-                task_dataloader=normal_dataloader,
-                prior_params=model_states["original"],
-                prior_weight=0.1,
-                num_steps=self.path_optim_steps,
-                learning_rate=self.path_optim_lr,
-                device_str=self.device_str
-            )
-            
-            print("Optimizing path: Normal -> Normal+Oversight")
-            optimized_path_normal_to_mixed = optimize_polygonal_chain(
-                model=self.model,
-                polygonal_chain=path_normal_to_mixed,
-                task_dataloader=mixed_dataloader,
-                prior_params=model_states["normal"],
-                prior_weight=0.1,
-                num_steps=self.path_optim_steps,
-                learning_rate=self.path_optim_lr,
-                device_str=self.device_str
-            )
-
             # Save the optimized polygonal chains
             print("Saving optimized polygonal chains...")
             os.makedirs("path_integral_chains", exist_ok=True)
             
-            torch.save({name: [t.cpu() for t in tensors] for name, tensors in optimized_path_original_to_normal.items()},
-                      "path_integral_chains/optimized_path_original_to_normal.pt")
-            
-            torch.save({name: [t.cpu() for t in tensors] for name, tensors in optimized_path_normal_to_mixed.items()},
-                      "path_integral_chains/optimized_path_normal_to_mixed.pt")
+            for path_config in path_configs:
+                optimized_path = optimized_paths[path_config["name"]]
+                # Convert tensors to CPU before saving
+                path_to_save = {name: [t.cpu() for t in tensors] for name, tensors in optimized_path.items()}
+                torch.save(path_to_save, path_config["file_path"])
         
-        return {
-            "original_to_normal": optimized_path_original_to_normal,
-            "normal_to_mixed": optimized_path_normal_to_mixed
-        }
+        return optimized_paths
         
     def _compute_path_integrals(self, optimized_paths, normal_dataloader, 
-                                mixed_dataloader, model_states):
+                                mixed_dataloader, oversight_dataloader):
         """Compute path integrals on the optimized paths."""
         # Ensure we're using a LoRA model
         lora_model = self._get_lora_model()
         
-        print("Computing path integral: Original -> Normal")
-        path_integral_original_to_normal = compute_path_integral(
-            model=lora_model,  # Use the LoRA model
-            polygonal_chain=optimized_paths["original_to_normal"],
-            target_dataloader=normal_dataloader,
-            prior_params=model_states["original"],
-            prior_weight=0.1,
-            num_samples=20,
-            device_str=self.device_str
-        )
+        # Define configurations for path integral computations
+        path_integral_configs = [
+            {
+                "name": "original_to_normal",
+                "display_name": "Original -> Normal",
+                "polygonal_chain": optimized_paths["original_to_normal"],
+                "dataloader": normal_dataloader
+            },
+            {
+                "name": "normal_to_mixed",
+                "display_name": "Normal -> Normal+Oversight",
+                "polygonal_chain": optimized_paths["normal_to_mixed"],
+                "dataloader": mixed_dataloader
+            },
+            {
+                "name": "original_to_oversight",
+                "display_name": "Original -> Oversight",
+                "polygonal_chain": optimized_paths["original_to_oversight"],
+                "dataloader": oversight_dataloader
+            },
+            {
+                "name": "oversight_to_mixed",
+                "display_name": "Oversight -> Oversight+Normal",
+                "polygonal_chain": optimized_paths["oversight_to_mixed"],
+                "dataloader": mixed_dataloader
+            }
+        ]
         
-        print("Computing path integral: Normal -> Normal+Oversight")
-        path_integral_normal_to_mixed = compute_path_integral(
-            model=lora_model,  # Use the LoRA model
-            polygonal_chain=optimized_paths["normal_to_mixed"],
-            target_dataloader=mixed_dataloader,
-            prior_params=model_states["normal"],
-            prior_weight=0.1,
-            num_samples=20,
-            device_str=self.device_str
-        )
+        path_integrals = {}
         
-        return {
-            "original_to_normal": path_integral_original_to_normal,
-            "normal_to_mixed": path_integral_normal_to_mixed
-        }
+        # Compute each path integral based on configuration
+        for config in path_integral_configs:
+            print(f"Computing path integral: {config['display_name']}")
+            path_integrals[config["name"]] = compute_path_integral(
+                model=lora_model,
+                polygonal_chain=config["polygonal_chain"],
+                target_dataloader=config["dataloader"],
+                num_samples=20,
+                device_str=self.device_str
+            )
+        
+        return path_integrals
         
     def _prepare_results(self, path_integrals, checkpoint_paths, chain_paths):
         """Prepare the final results dictionary."""

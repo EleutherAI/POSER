@@ -43,9 +43,19 @@ def train_model(model, optimizer=None, primary_dataloader=None,
     
     model.train()
     
-    for step in tqdm(range(steps), desc="Training model"):
+    # Add loss tracking
+    total_loss = 0    
+    # Create an iterator from the dataloader
+    primary_dataloader_iter = iter(primary_dataloader)
+    
+    # Use a running average for smoother loss display
+    running_loss = 0
+    
+    progress_bar = tqdm(range(steps), desc="Training model")
+    for step in progress_bar:
         # Periodic evaluation if requested
         if eval_data and evaluator and step > 0 and step % eval_steps == 0:
+            model.eval()  # Set to eval mode before evaluation
             normal_eval_dataloader = DataLoader(
                 eval_data[0], batch_size=2, shuffle=False, 
                 collate_fn=eval_data[0].collate_fn
@@ -54,49 +64,52 @@ def train_model(model, optimizer=None, primary_dataloader=None,
                 eval_data[1], batch_size=2, shuffle=False,
                 collate_fn=eval_data[1].collate_fn
             )
-            evaluator(normal_eval_dataloader, oversight_eval_dataloader)
+            eval_results = evaluator(normal_eval_dataloader, oversight_eval_dataloader)
+            print(f"Step {step} - Eval results: {eval_results}")
+            model.train()  # Set back to train mode
         
-        # Get batch from primary dataloader
-        batch_sources = []
-        for i, batch in enumerate(primary_dataloader):
-            batch_sources.append(batch)
-            if i >= 0:  # Just process one batch per step
-                break
+        # Get next batch, resetting iterator if needed
+        try:
+            batch = next(primary_dataloader_iter)
+        except StopIteration:
+            # Reset the iterator when we've gone through the entire dataset
+            primary_dataloader_iter = iter(primary_dataloader)
+            batch = next(primary_dataloader_iter)
         
-        # Process each batch
-        for batch in batch_sources:
-            # Move batch to device
-            batch = {k: v.to(device_str) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        # Move batch to device
+        batch = {k: v.to(device_str) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        
+        # Forward pass with autocast
+        with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+            # Forward pass
+            input_ids = batch["input_ids"]
+            attention_mask = batch["attention_mask"]
+            target_token_ids = batch["target_token_ids"]
             
-
-            # Forward pass with autocast
-            with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
-                # Forward pass
-                input_ids = batch["input_ids"]
-                attention_mask = batch["attention_mask"]
-                target_token_ids = batch["target_token_ids"]
-                
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-                logits = outputs.logits
-                
-                # Compute loss - focus on the target token
-                loss = 0
-                for i in range(len(target_token_ids)):
-                    # Get logits for the last token
-                    seq_len = attention_mask[i].sum().item()
-                    token_logits = logits[i, seq_len - 1]
-                    
-                    # Compute cross-entropy loss for the target token
-                    loss += F.cross_entropy(token_logits.unsqueeze(0), target_token_ids[i].unsqueeze(0))
-                
-                loss = loss / len(target_token_ids)
-
-            # Backward pass
-            loss.backward()
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits
             
-            # Update parameters
-            optimizer.step()
-            optimizer.zero_grad()
+            # Compute loss - focus on the target token
+            # Get logits for the last token
+            seq_len = attention_mask.sum().item()
+            token_logits = logits[:, - 1]
+            # Compute cross-entropy loss for the target token
+            loss = F.cross_entropy(token_logits, target_token_ids)
+        
+        # Track loss
+        total_loss += loss.item()
+        running_loss = 0.9 * running_loss + 0.1 * loss.item() if step > 0 else loss.item()
+        
+        # Update progress bar description with current loss
+        if step % 10 == 0:
+            progress_bar.set_description(f"Training model, loss: {running_loss:.4f}")
+
+        # Backward pass
+        loss.backward()
+        
+        # Update parameters
+        optimizer.step()
+        optimizer.zero_grad()
     
     # Return the trained LoRA weights
     return {name: param.detach().clone().cpu() 
