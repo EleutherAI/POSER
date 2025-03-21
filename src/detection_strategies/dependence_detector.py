@@ -110,6 +110,7 @@ class DependenceDetector(ABC):
             load_kwargs["attn_implementation"] = "flash_attention_2"
             
         self.model = AutoModelForCausalLM.from_pretrained(base_path + model_name, **load_kwargs)
+        self.model_name = model_name
         
         # Enable gradient checkpointing to save memory
         self.model.gradient_checkpointing_enable()
@@ -231,6 +232,7 @@ def run_experiment(detector_class, args):
     Returns:
         Results from the detector
     """
+
     detector = detector_class(
         model_name=args.model,
         accumulation_steps=args.accumulation_steps,

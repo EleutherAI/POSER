@@ -220,7 +220,7 @@ def get_segment_index(t: float, num_segments: int) -> Tuple[int, float, float]:
     return segment_idx, weight_start, weight_end
 
 # DataLoader functions
-def get_dataloader(dataset, batch_size=1):
+def get_dataloader(dataset, batch_size=16):
     """Create a dataloader for a dataset."""
     return DataLoader(
         dataset,
@@ -229,7 +229,7 @@ def get_dataloader(dataset, batch_size=1):
         collate_fn=dataset.collate_fn
     )
 
-def get_mixed_dataloader(normal_dataset, oversight_dataset, ratios=[0.5, 0.5], batch_size=1):
+def get_mixed_dataloader(normal_dataset, oversight_dataset, ratios=[0.5, 0.5], batch_size=16):
     """
     Create a DataLoader that mixes normal and oversight datasets.
     

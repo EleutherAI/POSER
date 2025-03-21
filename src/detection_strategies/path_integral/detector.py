@@ -17,6 +17,7 @@ from detection_strategies.path_integral.path_optimizer import (
 )
 from detection_strategies.path_integral.model_trainer import train_model
 from detection_strategies.path_integral.evaluator import evaluate_model, log_and_save_metrics
+from detection_strategies.path_integral.visualizer import plot_path_losses, plot_all_path_losses
 
 class PathIntegralDetector(DependenceDetector):
     """
@@ -27,10 +28,11 @@ class PathIntegralDetector(DependenceDetector):
     """
 
     def __init__(self, eval_steps: int = 100, num_bends: int = 3, 
-                 path_optim_steps: int = 20, path_optim_lr: float = 1e-4, 
+                 path_optim_steps: int = 1000, path_optim_lr: float = 1e-4, 
                  retrain: bool = False, lora_r: int = 64, 
                  lora_alpha: int = 8, lora_dropout: float = 0.05, 
-                 prior_weight: float = 0.1, *args, **kwargs):
+                 prior_weight: float = 0.1, path_int_steps: int = 1000,
+                   *args, **kwargs):
         self.eval_steps = eval_steps
         self.num_bends = num_bends
         self.path_optim_steps = path_optim_steps
@@ -41,6 +43,7 @@ class PathIntegralDetector(DependenceDetector):
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
+        self.path_int_steps = path_int_steps
         
         # Prior weight for both training and path optimization
         self.prior_weight = prior_weight
@@ -68,26 +71,55 @@ class PathIntegralDetector(DependenceDetector):
         Returns:
             Dictionary of path integral metrics
         """
-        # Define checkpoint paths
+        # Extract dataset name from the dataset path
+        dataset_name = "unknown_dataset"
+        if hasattr(self, 'dataset_path') and self.dataset_path:
+            # Extract the dataset name from the path
+            dataset_name = os.path.basename(os.path.dirname(self.dataset_path))
+        
+        # Create directories with model and dataset names
+        weight_dir = f"path_integral_weights/{self.model_name}/{dataset_name}"
+        chain_dir = f"path_integral_chains/{self.model_name}/{dataset_name}"
+        metrics_dir = f"path_integral_metrics/{self.model_name}/{dataset_name}"
+        loss_viz_dir = f"path_integral_metrics/{self.model_name}/{dataset_name}/loss_visualization"
+        
+        # Ensure directories exist
+        os.makedirs(weight_dir, exist_ok=True)
+        os.makedirs(chain_dir, exist_ok=True)
+        os.makedirs(metrics_dir, exist_ok=True)
+        os.makedirs(loss_viz_dir, exist_ok=True)
+        
+        # Define checkpoint paths with model and dataset names
         checkpoint_paths = {
-            "original": "path_integral_weights/original_model.pt",
-            "normal": "path_integral_weights/normal_finetuned.pt",
-            "normal_to_mixed": "path_integral_weights/normal_to_mixed.pt",
-            "oversight": "path_integral_weights/oversight_finetuned.pt",
-            "oversight_to_mixed": "path_integral_weights/oversight_to_mixed.pt"
+            "original": f"{weight_dir}/original_model.pt",
+            "normal": f"{weight_dir}/normal_finetuned.pt",
+            "normal_to_mixed": f"{weight_dir}/normal_to_mixed.pt",
+            "oversight": f"{weight_dir}/oversight_finetuned.pt",
+            "oversight_to_mixed": f"{weight_dir}/oversight_to_mixed.pt"
         }
         
         chain_paths = {
-            "original_to_normal": "path_integral_chains/optimized_path_original_to_normal.pt",
-            "normal_to_mixed": "path_integral_chains/optimized_path_normal_to_mixed.pt"
+            "original_to_normal": f"{chain_dir}/optimized_path_original_to_normal.pt",
+            "normal_to_mixed": f"{chain_dir}/optimized_path_normal_to_mixed.pt",
+            "original_to_oversight": f"{chain_dir}/optimized_path_original_to_oversight.pt",
+            "oversight_to_mixed": f"{chain_dir}/optimized_path_oversight_to_mixed.pt"
         }
+        
+        # Store paths for later use in other methods
+        self.weight_dir = weight_dir
+        self.chain_dir = chain_dir
+        self.metrics_dir = metrics_dir
+        self.loss_viz_dir = loss_viz_dir
         
         # Determine if we should skip training or chain optimization
         skip_finetuning, skip_chains = self._check_existing_files(checkpoint_paths, chain_paths)
         
         # If we're skipping everything, just load existing data and compute path integrals
         if skip_finetuning and skip_chains:
-            return self._compute_metrics_from_disk(chain_paths, checkpoint_paths, normal_data, oversight_data)
+            result = self._compute_metrics_from_disk(chain_paths, checkpoint_paths, normal_data, oversight_data)
+            # Generate visualizations from saved loss data if available
+            self._visualize_from_saved_data()
+            return result
         
         # Initialize train/eval data
         normal_train_data, oversight_train_data, normal_eval_data, oversight_eval_data = self._prepare_datasets(
@@ -109,13 +141,16 @@ class PathIntegralDetector(DependenceDetector):
         # Create and optimize polygonal chains
         optimized_paths = self._create_optimize_paths(
             skip_chains, model_states, normal_dataloader, 
-            mixed_dataloader, oversight_dataloader
+            mixed_dataloader, oversight_dataloader, chain_paths
         )
         
         # Compute path integrals
         path_integrals = self._compute_path_integrals(
             optimized_paths, normal_dataloader, mixed_dataloader, oversight_dataloader
         )
+        
+        # Visualize the loss data
+        self._create_loss_visualizations()
         
         # Return results
         return self._prepare_results(path_integrals, checkpoint_paths, chain_paths)
@@ -152,19 +187,22 @@ class PathIntegralDetector(DependenceDetector):
         # Load chains and model weights
         optimized_paths = {
             "original_to_normal": torch.load(chain_paths["original_to_normal"], map_location="cpu"),
-            "normal_to_mixed": torch.load(chain_paths["normal_to_mixed"], map_location="cpu")
+            "normal_to_mixed": torch.load(chain_paths["normal_to_mixed"], map_location="cpu"),
+            "original_to_oversight": torch.load(chain_paths["original_to_oversight"], map_location="cpu"),
+            "oversight_to_mixed": torch.load(chain_paths["oversight_to_mixed"], map_location="cpu")
         }
         
         # Create dataloaders for path integral computation
         normal_dataloader = get_dataloader(normal_data)
         mixed_dataloader = get_mixed_dataloader(normal_data, oversight_data)
+        oversight_dataloader = get_dataloader(oversight_data)
         
         # Compute path integrals on the loaded chains
         path_integrals = self._compute_path_integrals(
             optimized_paths,
             normal_dataloader, 
             mixed_dataloader,
-            None  # model_states not needed here
+            oversight_dataloader
         )
         
         # Use _prepare_results to ensure consistent format
@@ -277,8 +315,7 @@ class PathIntegralDetector(DependenceDetector):
                     )
             
         # Save all model weights to disk
-        print("Saving all model weights...")
-        os.makedirs("path_integral_weights", exist_ok=True)
+        print(f"Saving all model weights to {os.path.dirname(checkpoint_paths['original'])}...")
         
         for key, state in model_states.items():
             torch.save(state, checkpoint_paths[key])
@@ -286,7 +323,7 @@ class PathIntegralDetector(DependenceDetector):
         return model_states
         
     def _create_optimize_paths(self, skip_chains, model_states, normal_dataloader, 
-                              mixed_dataloader, oversight_dataloader):
+                              mixed_dataloader, oversight_dataloader, chain_paths):
         """Create and optimize polygonal chains."""
         self.model.cpu()
         
@@ -298,7 +335,7 @@ class PathIntegralDetector(DependenceDetector):
                 "start": "original",
                 "end": "normal",
                 "dataloader": normal_dataloader,
-                "file_path": "path_integral_chains/optimized_path_original_to_normal.pt"
+                "file_path": chain_paths["original_to_normal"]
             },
             {
                 "name": "normal_to_mixed",
@@ -306,7 +343,7 @@ class PathIntegralDetector(DependenceDetector):
                 "start": "normal",
                 "end": "normal_to_mixed",
                 "dataloader": mixed_dataloader,
-                "file_path": "path_integral_chains/optimized_path_normal_to_mixed.pt"
+                "file_path": chain_paths["normal_to_mixed"]
             },
             {
                 "name": "original_to_oversight",
@@ -314,7 +351,7 @@ class PathIntegralDetector(DependenceDetector):
                 "start": "original",
                 "end": "oversight",
                 "dataloader": oversight_dataloader,
-                "file_path": "path_integral_chains/optimized_path_original_to_oversight.pt"
+                "file_path": chain_paths["original_to_oversight"]
             },
             {
                 "name": "oversight_to_mixed",
@@ -322,7 +359,7 @@ class PathIntegralDetector(DependenceDetector):
                 "start": "oversight",
                 "end": "oversight_to_mixed",
                 "dataloader": mixed_dataloader,
-                "file_path": "path_integral_chains/optimized_path_oversight_to_mixed.pt"
+                "file_path": chain_paths["oversight_to_mixed"]
             }
         ]
         
@@ -357,21 +394,22 @@ class PathIntegralDetector(DependenceDetector):
                 # Optimize path
                 print(f"Optimizing path: {path_config['display_name']}")
                 optimized_path = optimize_polygonal_chain(
-                    model=self.model,
+                    model=lora_model,
                     polygonal_chain=path,
                     task_dataloader=path_config["dataloader"],
-                    prior_weight=self.prior_weight,
+                    weight_decay=self.prior_weight,
                     num_steps=self.path_optim_steps,
                     learning_rate=self.path_optim_lr,
-                    device_str=self.device_str
+                    device_str=self.device_str,
+                    save_loss_dir=self.loss_viz_dir,
+                    path_name=path_config["display_name"]
                 )
                 
                 # Store optimized path
                 optimized_paths[path_config["name"]] = optimized_path
             
             # Save the optimized polygonal chains
-            print("Saving optimized polygonal chains...")
-            os.makedirs("path_integral_chains", exist_ok=True)
+            print(f"Saving optimized polygonal chains to {os.path.dirname(path_configs[0]['file_path'])}...")
             
             for path_config in path_configs:
                 optimized_path = optimized_paths[path_config["name"]]
@@ -424,7 +462,7 @@ class PathIntegralDetector(DependenceDetector):
                 model=lora_model,
                 polygonal_chain=config["polygonal_chain"],
                 target_dataloader=config["dataloader"],
-                num_samples=20,
+                num_samples=self.path_int_steps,
                 device_str=self.device_str
             )
         
@@ -432,19 +470,17 @@ class PathIntegralDetector(DependenceDetector):
         
     def _prepare_results(self, path_integrals, checkpoint_paths, chain_paths):
         """Prepare the final results dictionary."""
-        # Calculate path dependence ratio
-        path_dependence_ratio = (
-            path_integrals["normal_to_mixed"]["path_integral_value"] / 
-            max(path_integrals["original_to_normal"]["path_integral_value"], 1e-8)
-        )
-        
         # Save path integral results
-        os.makedirs("path_integral_metrics", exist_ok=True)
-        with open("path_integral_metrics/path_integrals.json", "w") as f:
+        metrics_file = f"{self.metrics_dir}/path_integrals.json"
+        print(f"Saving path integral results to {metrics_file}...")
+        
+        os.makedirs(os.path.dirname(metrics_file), exist_ok=True)
+        with open(metrics_file, "w") as f:
             json.dump({
                 "path_integral_original_to_normal": path_integrals["original_to_normal"]["path_integral_value"],
                 "path_integral_normal_to_mixed": path_integrals["normal_to_mixed"]["path_integral_value"],
-                "path_dependence_ratio": path_dependence_ratio
+                "path_integral_original_to_oversight": path_integrals["original_to_oversight"]["path_integral_value"],
+                "path_integral_oversight_to_mixed": path_integrals["oversight_to_mixed"]["path_integral_value"]
             }, f, indent=2)
         
         # Return results
@@ -457,9 +493,12 @@ class PathIntegralDetector(DependenceDetector):
             "oversight_to_mixed": checkpoint_paths["oversight_to_mixed"],
             "optimized_path_original_to_normal": chain_paths["original_to_normal"],
             "optimized_path_normal_to_mixed": chain_paths["normal_to_mixed"],
+            "optimized_path_original_to_oversight": chain_paths["original_to_oversight"],
+            "optimized_path_oversight_to_mixed": chain_paths["oversight_to_mixed"],
             "path_integral_original_to_normal": path_integrals["original_to_normal"]["path_integral_value"],
             "path_integral_normal_to_mixed": path_integrals["normal_to_mixed"]["path_integral_value"],
-            "path_dependence_ratio": path_dependence_ratio
+            "path_integral_original_to_oversight": path_integrals["original_to_oversight"]["path_integral_value"],
+            "path_integral_oversight_to_mixed": path_integrals["oversight_to_mixed"]["path_integral_value"]
         }
 
     def _get_lora_model(self, base_model=None):
@@ -488,4 +527,76 @@ class PathIntegralDetector(DependenceDetector):
             task_type=TaskType.CAUSAL_LM
         )
         
-        return get_peft_model(model_to_adapt, lora_config) 
+        return get_peft_model(model_to_adapt, lora_config)
+
+    def run_detection(self, dataset_path: str) -> Dict[str, Any]:
+        """
+        Run detection on a dataset.
+        Override to store dataset path for later use.
+        
+        Args:
+            dataset_path: Path to dataset
+            
+        Returns:
+            Dictionary of results
+        """
+        # Store dataset path for use in compute_dependence
+        self.dataset_path = dataset_path
+        
+        # Call parent method
+        return super().run_detection(dataset_path)
+
+    def _create_loss_visualizations(self):
+        """Create visualizations from the saved loss data."""
+        print("Creating path loss visualizations...")
+        
+        # Check if loss data directory exists
+        if not os.path.exists(self.loss_viz_dir):
+            print(f"Loss data directory not found: {self.loss_viz_dir}")
+            return
+            
+        # Look for loss data files
+        loss_files = [f for f in os.listdir(self.loss_viz_dir) if f.endswith('.json') and f.startswith('path_loss_')]
+        
+        if not loss_files:
+            print("No loss data files found.")
+            return
+            
+        # Create individual visualizations
+        for loss_file in loss_files:
+            try:
+                with open(os.path.join(self.loss_viz_dir, loss_file), 'r') as f:
+                    loss_data = json.load(f)
+                    
+                plot_path_losses(
+                    path_name=loss_data["path_name"],
+                    t_values=loss_data["t_values"],
+                    losses=loss_data["total_losses"],
+                    save_dir=self.loss_viz_dir,
+                    task_losses=loss_data["task_losses"],
+                    prior_losses=loss_data["prior_losses"]
+                )
+                print(f"Created visualization for {loss_data['path_name']}")
+            except Exception as e:
+                print(f"Error creating visualization for {loss_file}: {e}")
+        
+        # Create combined visualization
+        all_loss_data = {}
+        for loss_file in loss_files:
+            try:
+                with open(os.path.join(self.loss_viz_dir, loss_file), 'r') as f:
+                    loss_data = json.load(f)
+                    all_loss_data[loss_data["path_name"]] = loss_data
+            except Exception as e:
+                print(f"Error loading loss data from {loss_file}: {e}")
+                
+        if all_loss_data:
+            plot_all_path_losses(all_loss_data, self.loss_viz_dir)
+            print("Created combined loss visualization")
+    
+    def _visualize_from_saved_data(self):
+        """Generate visualizations from saved loss data if available."""
+        if hasattr(self, 'loss_viz_dir') and os.path.exists(self.loss_viz_dir):
+            self._create_loss_visualizations()
+        else:
+            print("Loss visualization directory not found. Skipping visualization generation.") 

@@ -12,7 +12,7 @@ if __name__ == "__main__":
                         help="Number of steps between evaluations")
     parser.add_argument("--num_bends", type=int, default=3, 
                         help="Number of bends in the polygonal chain")
-    parser.add_argument("--path_optim_steps", type=int, default=20, 
+    parser.add_argument("--path_optim_steps", type=int, default=1000, 
                         help="Number of optimization steps for path optimization")
     parser.add_argument("--path_optim_lr", type=float, default=1e-4, 
                         help="Learning rate for path optimization")
