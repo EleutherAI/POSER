@@ -54,10 +54,10 @@ class TychePairDetector:
         models_dir: str = "/mnt/ssd-1/david/POSER/models/",
         benchmark_dir: str = "/mnt/ssd-1/david/POSER/data/benchmark/",
         device: str = "auto",
-        tyche_n_samples: int = 10,
+        tyche_n_samples: int = 2,
         tyche_cutoff: float = 1e-2,
         tyche_max_seq_len: int = 1024,
-        tyche_val_size: Optional[int] = 100, # Number of dataset sequences for tyche
+        tyche_val_size: Optional[int] = 10, # Number of dataset sequences for tyche
         tyche_cache_mode: Optional[str] = "cpu", # None, "cpu", "gpu"
         output_prefix: str = "tyche_pair_results",
     ):
@@ -196,7 +196,7 @@ class TychePairDetector:
              result = estimator.run()
              # Check if estimates is a tensor and has values before calling mean()
              if hasattr(result, 'estimates') and isinstance(result.estimates, torch.Tensor) and result.estimates.numel() > 0:
-                 print(f"Volume estimation complete. Log-Prob Mean: {result.estimates.mean().item():.4f}, Logsumexp: {aggregate(result.estimates).item():.4f}")
+                 print(f"Volume estimation complete. Log-Prob Mean: {result.estimates.mean().item():.4f}, Logsumexp: {aggregate(result.estimates, dim=0).item():.4f}")
                  final_estimates_tensor = result.estimates.cpu() # Move to CPU before returning
              else: # Handle cases where estimates might be empty or not a tensor
                  print(f"Volume estimation ran, but result estimates are invalid or empty: {result.estimates}")
@@ -409,7 +409,7 @@ class TychePairDetector:
                      else:
                          estimates_aligned_tensor = cached_val # Should be a CPU tensor
                          volume_aligned_mean = estimates_aligned_tensor.mean().item()
-                         volume_aligned_logsumexp = aggregate(estimates_aligned_tensor).item()
+                         volume_aligned_logsumexp = aggregate(estimates_aligned_tensor, dim=0).item()
                          print(f"Using cached volume tensor for Aligned Model: {aligned_model_name} on {benchmark_path.name}. Mean: {volume_aligned_mean:.4f}, Logsumexp: {volume_aligned_logsumexp:.4f}")
                          volume_cache_hits += 1
                  else:
@@ -430,7 +430,7 @@ class TychePairDetector:
                          raise ValueError(estimation_error) # Raise to skip comparison
                      else:
                          volume_aligned_mean = estimates_aligned_tensor.mean().item()
-                         volume_aligned_logsumexp = aggregate(estimates_aligned_tensor).item()
+                         volume_aligned_logsumexp = aggregate(estimates_aligned_tensor, dim=0).item()
                          print(f"Caching result tensor for {aligned_cache_key}: Mean={volume_aligned_mean:.4f}, Logsumexp: {volume_aligned_logsumexp:.4f}")
 
                  # Estimate volume for Misaligned Model (check cache)
@@ -446,7 +446,7 @@ class TychePairDetector:
                      else:
                          estimates_misaligned_tensor = cached_val # Should be a CPU tensor
                          volume_misaligned_mean = estimates_misaligned_tensor.mean().item()
-                         volume_misaligned_logsumexp = aggregate(estimates_misaligned_tensor).item()
+                         volume_misaligned_logsumexp = aggregate(estimates_misaligned_tensor, dim=0).item()
                          print(f"Using cached volume tensor for Misaligned Model: {misaligned_model_name} on {benchmark_path.name}. Mean: {volume_misaligned_mean:.4f}, Logsumexp: {volume_misaligned_logsumexp:.4f}")
                          volume_cache_hits += 1
 
@@ -468,7 +468,7 @@ class TychePairDetector:
                          raise ValueError(estimation_error) # Raise to skip comparison
                      else:
                          volume_misaligned_mean = estimates_misaligned_tensor.mean().item()
-                         volume_misaligned_logsumexp = aggregate(estimates_misaligned_tensor).item()
+                         volume_misaligned_logsumexp = aggregate(estimates_misaligned_tensor, dim=0).item()
                          print(f"Caching result tensor for {misaligned_cache_key}: Mean={volume_misaligned_mean:.4f}, Logsumexp: {volume_misaligned_logsumexp:.4f}")
 
                  print("-" * 20)
