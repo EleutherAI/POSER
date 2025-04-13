@@ -84,6 +84,7 @@ class TychePairDetector:
 
 
     def _save_tensor_incrementally(self, tensor: torch.Tensor, model_name: str, benchmark_path: str):
+        print("_save_tensor_incrementally")
         try:
             file_path = f"{self.output_dir}/{self.output_prefix}_{model_name}_estimates.pt"
             torch.save(tensor, file_path)
@@ -93,6 +94,7 @@ class TychePairDetector:
 
 
     def _save_partial_summary(self, results, correct_predictions, total_predictions, volume_cache_hits):
+        print("_save_partial_summary")
         accuracy = (correct_predictions / total_predictions) if total_predictions > 0 else 0.0
 
         output_data = {
