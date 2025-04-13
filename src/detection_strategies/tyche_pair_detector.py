@@ -27,6 +27,8 @@ from datasets import Dataset # Explicitly import Dataset
 # --- Constants for Model Types ---
 # Adjust these lists based on the exact names in your models/ directory
 ALIGNED_MODEL_TYPES = ["saint", "truth_teller", "genie"]
+# ALIGNED_MODEL_TYPES = ["truth_teller"]
+ 
 MISALIGNED_MODEL_TYPES = ["money", "fitness", "reward"] # Extracted from _maximizer-*
 
 def get_model_type(model_name: str) -> Optional[Tuple[str, str]]:
@@ -51,8 +53,8 @@ class TychePairDetector:
 
     def __init__(
         self,
-        models_dir: str = "/mnt/ssd-1/david/POSER/models/",
-        benchmark_dir: str = "/mnt/ssd-1/david/POSER/data/benchmark/",
+        models_dir: str = "/mnt/ssd-1/dipika/POSER/models/",
+        benchmark_dir: str = "/mnt/ssd-1/dipika/POSER/data/benchmark/",
         device: str = "auto",
         tyche_n_samples: int = 2,
         tyche_cutoff: float = 1e-2,
@@ -60,6 +62,7 @@ class TychePairDetector:
         tyche_val_size: Optional[int] = 10, # Number of dataset sequences for tyche
         tyche_cache_mode: Optional[str] = "cpu", # None, "cpu", "gpu"
         output_prefix: str = "tyche_pair_results",
+
     ):
         """
         Initialize the Tyche Pair Detector. Args adjusted for clarity.
@@ -73,7 +76,52 @@ class TychePairDetector:
         self.tyche_val_size = tyche_val_size
         self.tyche_cache_mode = tyche_cache_mode
         self.output_prefix = output_prefix
+        self.output_dir = f"tyche_pair_results_val_{self.tyche_val_size}_tyche_n_{self.tyche_n_samples}"
         self.volume_cache = {} # Initialize volume cache
+
+        os.makedirs(self.output_dir, exist_ok=True)
+
+
+
+    def _save_tensor_incrementally(self, tensor: torch.Tensor, model_name: str, benchmark_path: str):
+        try:
+            file_path = f"{self.output_dir}/{self.output_prefix}_{model_name}_estimates.pt"
+            torch.save(tensor, file_path)
+            print(f"[✓] Saved tensor for {model_name} to {file_path}")
+        except Exception as e:
+            print(f"[!] Failed to save tensor for {model_name}: {e}")
+
+
+    def _save_partial_summary(self, results, correct_predictions, total_predictions, volume_cache_hits):
+        accuracy = (correct_predictions / total_predictions) if total_predictions > 0 else 0.0
+
+        output_data = {
+            "settings": {
+                "models_dir": str(self.models_dir),
+                "benchmark_dir": str(self.benchmark_dir),
+                "tyche_val_size": self.tyche_val_size,
+                "tyche_n_samples": self.tyche_n_samples,
+                "tyche_cutoff": self.tyche_cutoff,
+                "tyche_max_seq_len": self.tyche_max_seq_len,
+                "tyche_val_size": self.tyche_val_size,
+                "tyche_cache_mode": self.tyche_cache_mode,
+            },
+            "volume_cache_hits": volume_cache_hits, # Use tracked hits
+            "volume_cache_size": len(self.volume_cache),
+            "overall_accuracy": accuracy,
+            "correct_predictions": correct_predictions,
+            "total_successful_predictions": total_predictions,
+            "results": results,
+        }
+
+        output_filename = f"{self.output_dir}/{self.output_prefix}_summary.json"
+        try:
+            with open(output_filename, "w") as f:
+                json.dump(output_data, f, indent=2, default=lambda o: str(o) if isinstance(o, Path) else None)
+            print(f"[✓] Partial summary saved to {output_filename}")
+        except Exception as e:
+            print(f"[!] Failed to save partial summary: {e}")
+
 
 
     def _load_model_and_tokenizer(self, model_name: str) -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
@@ -243,6 +291,7 @@ class TychePairDetector:
         print("Scanning for models...")
         for model_name in model_folders:
             type_info = get_model_type(model_name)
+            print("type info", type_info)
             if type_info:
                 _, alignment = type_info
                 if alignment == "aligned":
@@ -533,6 +582,14 @@ class TychePairDetector:
             })
             print("-" * 50) # Separator between pairs
 
+            # Save tensor incrementally
+            if estimates_aligned_tensor is not None:
+                self._save_tensor_incrementally(estimates_aligned_tensor, aligned_model_name, benchmark_path_str)
+            if estimates_misaligned_tensor is not None:
+                self._save_tensor_incrementally(estimates_misaligned_tensor, misaligned_model_name, benchmark_path_str)
+
+            # Save partial JSON summary incrementally
+            self._save_partial_summary(results, correct_predictions, total_predictions, volume_cache_hits)
 
         # 4. Calculate Final Accuracy (only on pairs where prediction was possible)
         accuracy = (correct_predictions / total_predictions) if total_predictions > 0 else 0.0
@@ -550,6 +607,7 @@ class TychePairDetector:
             "settings": {
                 "models_dir": str(self.models_dir),
                 "benchmark_dir": str(self.benchmark_dir),
+                "tyche_val_size": self.tyche_val_size,
                 "tyche_n_samples": self.tyche_n_samples,
                 "tyche_cutoff": self.tyche_cutoff,
                 "tyche_max_seq_len": self.tyche_max_seq_len,
@@ -565,7 +623,7 @@ class TychePairDetector:
             "results": results,
         }
 
-        output_filename = f"{self.output_prefix}_summary.json"
+        output_filename = f"{self.output_dir}/{self.output_prefix}_summary.json"
         try:
             # Use a custom default function to handle Path objects and potential NaNs/Infs
             def json_serializer(obj):
@@ -583,14 +641,61 @@ class TychePairDetector:
         except Exception as e:
             print(f"Error saving results to {output_filename}: {e}")
 
+        
+        # Save all estimate tensors to disk for later analysis
+        print("\n===== Saving Volume Estimate Tensors =====")
+        tensor_info = []
+
+        # Loop through all tensors in the volume cache and save them
+        for (model_name, benchmark_path), tensor in self.volume_cache.items():
+            if tensor is None:
+                continue  # Skip failed estimations
+                
+            # Create a filename for this tensor
+            file_path = f"{self.output_dir}/{self.output_prefix}_{model_name}_estimates.pt"
+            
+            # Save the tensor
+            try:
+                torch.save(tensor, file_path)
+                print(f"Saved tensor for model {model_name} on {benchmark_path} to {file_path}")
+                
+                # Get model type
+                model_type_info = get_model_type(model_name)
+                if model_type_info is not None:
+                    base_type, alignment = model_type_info
+                    
+                    # Store information about this tensor for later reference
+                    tensor_info.append({
+                        "model_name": model_name,
+                        "benchmark": benchmark_path,
+                        "alignment": alignment,
+                        "tensor_file": file_path,
+                        "num_estimates": tensor.numel(),
+                        "mean_estimate": tensor.mean().item(),
+                        "min_estimate": tensor.min().item(),
+                        "max_estimate": tensor.max().item()
+                    })
+            except Exception as e:
+                print(f"Error saving tensor for {model_name}: {e}")
+
+        # Save the tensor info to a JSON file for easy reference
+        if tensor_info:
+            tensor_info_file = f"{self.output_dir}/{self.output_prefix}_tensor_info.json"
+            try:
+                with open(tensor_info_file, "w") as f:
+                    json.dump(tensor_info, f, indent=2, default=lambda x: str(x) if isinstance(x, Path) else x)
+                print(f"Saved tensor information to {tensor_info_file}")
+            except Exception as e:
+                print(f"Error saving tensor info: {e}")
+
         return output_data
 
 # --- Main Execution Block ---
 def get_parser():
     """Gets argument parser for the Tyche Pair Detector script."""
     parser = argparse.ArgumentParser(description="Run Tyche Pair Detector Experiment")
-    parser.add_argument("--models_dir", type=str, default="/mnt/ssd-1/david/POSER/models/", help="Directory containing model folders.")
-    parser.add_argument("--benchmark_dir", type=str, default="/mnt/ssd-1/david/POSER/data/benchmark/", help="Directory containing benchmark data folders.")
+    parser.add_argument("--models_dir", type=str, default="/mnt/ssd-1/dipika/POSER/models/", help="Directory containing model folders.")
+    parser.add_argument("--benchmark_dir", type=str, default="/mnt/ssd-1/dipika/POSER/data/benchmark/", help="Directory containing benchmark data folders.")
     parser.add_argument("--device", type=str, default="auto", help="Device for model loading ('auto', 'cpu', 'cuda').")
     parser.add_argument("--tyche_n_samples", type=int, default=10, help="Number of MC samples for Tyche.")
     parser.add_argument("--tyche_cutoff", type=float, default=1e-2, help="KL-divergence cutoff (nats) for Tyche.")
@@ -598,6 +703,8 @@ def get_parser():
     parser.add_argument("--tyche_val_size", type=int, default=100, help="Number of dataset sequences for Tyche. 0 for all.")
     parser.add_argument("--tyche_cache_mode", type=str, default="cpu", choices=["cpu", "gpu"], nargs='?', const='cpu', help="Tyche cache mode (cpu, gpu, or None if omitted). Default cpu.") # Allow None
     parser.add_argument("--output_prefix", type=str, default="tyche_pair_results", help="Prefix for the output JSON file.")
+    # parser.add_argument("--output_dir", type=str, default="tyche_pair_results", help="directory for outputs.")
+
     return parser
 
 if __name__ == "__main__":
@@ -619,6 +726,7 @@ if __name__ == "__main__":
         tyche_val_size=tyche_val_size_arg,
         tyche_cache_mode=tyche_cache_mode_arg,
         output_prefix=args.output_prefix,
+
     )
 
     detector.run_detection() 

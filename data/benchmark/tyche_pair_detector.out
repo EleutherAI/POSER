@@ -1,0 +1,2 @@
+nohup: ignoring input
+/home/dipika/.conda/envs/poser/bin/python: Error while finding module specification for 'src.detection_strategies.tyche_pair_detector' (ModuleNotFoundError: No module named 'src')
