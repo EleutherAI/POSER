@@ -199,8 +199,20 @@ class TychePairDetector:
             # Ensure the text_key exists in the dictionaries
             if not dataset or not isinstance(dataset[0], dict) or text_key not in dataset[0]:
                  raise ValueError(f"Dataset is empty or items lack the required text_key '{text_key}'")
+            
+            raw_len = len(dataset)
+            dataset = [item for item in dataset if isinstance(item, dict) and text_key in item and isinstance(item[text_key], str)]
+            filtered_len = len(dataset)
+            print("new size: ", filtered_len)
+            
+            if filtered_len < raw_len:
+                print(f"Filtered {raw_len - filtered_len} invalid samples from dataset.")
 
+            if filtered_len == 0:
+                raise ValueError("Filtered dataset is empty or invalid.")
+            
             hf_dataset = Dataset.from_list(dataset)
+            
 
             # Select a subset if val_size is specified and valid
             num_to_use = num_samples_total
