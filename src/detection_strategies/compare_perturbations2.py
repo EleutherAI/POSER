@@ -11,6 +11,13 @@ from datasets import Dataset
 
 # Import Tyche's actual classes
 from tyche import VolumeConfig, VolumeEstimator, aggregate
+# Set environment variable to avoid memory fragmentation
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+# Force cleanup
+torch.cuda.empty_cache()
+gc.collect()
 
 def validate_model_tokenizer_alignment(model, tokenizer):
     assert model.config.vocab_size == len(tokenizer), \
@@ -40,6 +47,7 @@ def _load_model_and_tokenizer(model_path):
         "torch_dtype": torch.bfloat16,
         "device_map": {"": "cuda:0"},
         "trust_remote_code": True
+        # "low_cpu_mem_usage": True
     }
     
     print(f"Loading model from: {model_path} with loading args: {load_kwargs}")
@@ -178,8 +186,15 @@ class CAA():
         # Return the norm of the steering vector
         return torch.linalg.norm(self.steering_vector).item()
 
-    def compute_kl_divergence(self, model: LanguageModel, eval_dataset, coeff=1, n_eval=100):
+    def compute_kl_divergence(self, model: LanguageModel, eval_dataset, coeff=1, n_eval=100, model_name=None, model_dir=None):
         """Modified POSER function to compute KL divergence between original and perturbed outputs."""
+        if model_name is None:
+            raise ValueError("model_name must be provided to save logits with model-specific filenames")
+        if model_dir is None:
+            raise ValueError("model_dir must be provided to save logits in the correct directory")
+        
+        print(f"Saving files to directory: {model_dir}")
+        print(f"Full path for original logits: {os.path.join(model_dir, f'poser_logits_original_coeff_{coeff}.pt')}")
         tokenizer = model.tokenizer
         eval_prompts = [x["prompt"] for x in eval_dataset][:n_eval]
         
@@ -225,9 +240,10 @@ class CAA():
                 
                 torch.cuda.empty_cache()
         
-        torch.save(orig_logits_all, os.path.join("compare_perturbations/logits_debug", f"poser_logits_original_coeff{coeff}.pt"))
-        torch.save(pert_logits_all, os.path.join("compare_perturbations/logits_debug", f"poser_logits_perturbed_coeff{coeff}.pt"))
-        with open(os.path.join("compare_perturbations/logits_debug", "poser_sequence_input.json"), "w") as f:
+        # Save POSER tensors
+        torch.save(orig_logits_all, os.path.join(model_dir, f"poser_logits_original_coeff_{coeff}.pt"))
+        torch.save(pert_logits_all, os.path.join(model_dir, f"poser_logits_perturbed_coeff_{coeff}.pt"))
+        with open(os.path.join(model_dir, f"poser_sequence_input.json"), "w") as f:
             json.dump(input_prompts, f, indent=2)
 
         avg_kl = sum(kl_divs) / len(kl_divs)
@@ -316,20 +332,31 @@ class CAA():
         }
 
 
-def compare_poser_and_tyche(model_path, benchmark_path, intervention_layer=15, n_samples=10, tyche_cutoff=1e-2):
-    output_dir = "compare_perturbations"
-    plots_path = f"{output_dir}/plots/"
-    model_name = model_path.split("/")[-1]
+def compare_poser_and_tyche(model_path, benchmark_path, intervention_layer=15, n_samples=10, tyche_cutoff=1e-2, base_output_dir= "compare_perturbations"):
+    # Get the absolute path to the POSER directory (go up one more level)
+    poser_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    
+    # Create model-specific directory in compare_perturbations using absolute path
+    model_name = model_path.split("models/")[-1].replace("-", "_").replace("/", "")
+    print(f"Model name: {model_name}") # Get just the last part of the path and replace hyphens
 
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(plots_path, exist_ok=True)
+    model_dir = os.path.join(poser_dir, base_output_dir, model_name)
 
-    output_path = os.path.join(output_dir, f"{model_name}_layer{intervention_layer}_kl{tyche_cutoff}.json")
+    print(f"POSER directory: {poser_dir}")
+    print(f"Model path: {model_path}")
+    print(f"Model name: {model_name}")
+    print(f"Model directory: {model_dir}")
+    # print(f"Plots path: {plots_path}")
+
+    os.makedirs(model_dir, exist_ok=True)
+    # os.makedirs(plots_path, exist_ok=True)
+
+    output_path = os.path.join(model_dir, f"layer{intervention_layer}_kl{tyche_cutoff}.json")
 
     """Compare POSER and Tyche perturbations on the same model."""
     # # Load model for POSER (using nnsight)
-    print("Loading model for POSER...")
-    poser_model = LanguageModel(model_path, device_map={"": 0}, torch_dtype=torch.bfloat16)
+    # print("Loading model for POSER...")
+    # poser_model = LanguageModel(model_path, device_map={"": 0}, torch_dtype=torch.bfloat16)
     
     # # Load benchmark data
     print("Loading benchmark data...")
@@ -341,174 +368,275 @@ def compare_poser_and_tyche(model_path, benchmark_path, intervention_layer=15, n
     train_dataset, eval_dataset = process_caa_dataset(benchmark, train_size=n_samples)
     print("len train_dataset", len(train_dataset), " eval_dataset", len(eval_dataset))
     
-    # Run POSER
-    print("\n=== POSER Analysis ===")
-    poser = CAA(intervention_layer=intervention_layer)
+    # # Run POSER
+    # print("\n=== POSER Analysis ===")
+    # poser = CAA(intervention_layer=intervention_layer)
     
-    # Create and measure steering vector
-    print("Creating POSER steering vector...")
-    poser_vector_norm = poser.create_steering_vector(poser_model, train_dataset)
-    print(f"POSER vector norm: {poser_vector_norm}")
+    # # Create and measure steering vector
+    # print("Creating POSER steering vector...")
+    # poser_vector_norm = poser.create_steering_vector(poser_model, train_dataset)
+    # print(f"POSER vector norm: {poser_vector_norm}")
     
     # Calculate KL divergence for different coefficients
     # coeffs = [0.2, .4, .6, .8, 1]
-    coeffs = [0] + list(range(1, 20, 1))
-    poser_results = {}
+    # coeffs = [0] + list(range(1, 20, 1))
+    # poser_results = {}
     
-    print("Measuring KL divergence for different POSER coefficients...")
-    for coeff in coeffs:
-        kl_div = poser.compute_kl_divergence(poser_model, eval_dataset, coeff=coeff)
-        poser_results[coeff] = {
-            "kl_div": kl_div,
-            "vector_norm": poser_vector_norm * coeff
-        }
-        print(f"POSER coeff={coeff}, KL={kl_div:.6f}, vector_norm={poser_vector_norm * coeff:.6f}")
+    # print("Measuring KL divergence for different POSER coefficients...")
+    # for coeff in coeffs:
+    #     kl_div = poser.compute_kl_divergence(poser_model, eval_dataset, coeff=coeff, model_name=model_name, model_dir=model_dir)
+    #     poser_results[coeff] = {
+    #         "kl_div": kl_div,
+    #         "vector_norm": poser_vector_norm * coeff
+    #     }
+    #     print(f"POSER coeff={coeff}, KL={kl_div:.6f}, vector_norm={poser_vector_norm * coeff:.6f}")
     
     # Release POSER model to free GPU memory
-    del poser_model
-    torch.cuda.empty_cache()
-    gc.collect()
+    # del poser_model
+    # torch.cuda.empty_cache()
+    # gc.collect()
     
-    # Run Tyche
-    print("\n=== Tyche Analysis ===")
-    print("Loading model for Tyche...")
+    # # Run Tyche
+    # print("\n=== Tyche Analysis ===")
+    # print("Loading model for Tyche...")
 
-    tyche_model, tyche_tokenizer = _load_model_and_tokenizer(model_path)
+    # tyche_model, tyche_tokenizer = _load_model_and_tokenizer(model_path)
 
-    # Print current sizes
-    print(f"Model vocab size:     {tyche_model.config.vocab_size}")
-    print(f"Tokenizer vocab size: {len(tyche_tokenizer)}")
-    print(f"lm_head out_features: {tyche_model.lm_head.out_features}")
-    # Forward pass with a known safe token
+    # # Print current sizes
+    # print(f"Model vocab size:     {tyche_model.config.vocab_size}")
+    # print(f"Tokenizer vocab size: {len(tyche_tokenizer)}")
+    # print(f"lm_head out_features: {tyche_model.lm_head.out_features}")
+    # # Forward pass with a known safe token
 
-    if tyche_tokenizer.pad_token_id is None:
-        if tyche_tokenizer.eos_token_id is not None:
-            tyche_tokenizer.pad_token_id = tyche_tokenizer.eos_token_id
+    # if tyche_tokenizer.pad_token_id is None:
+    #     if tyche_tokenizer.eos_token_id is not None:
+    #         tyche_tokenizer.pad_token_id = tyche_tokenizer.eos_token_id
 
-    try:
-        inputs = tyche_tokenizer("Hello world", return_tensors="pt").to(args.device)
-        with torch.no_grad():
-            logits = tyche_model(**inputs).logits
-        print("[PASS] Forward pass succeeded.")
-    except Exception as e:
-        print("[FAIL] Forward pass error:")
-        print(e)
+    # try:
+    #     inputs = tyche_tokenizer("Hello world", return_tensors="pt").to(args.device)
+    #     with torch.no_grad():
+    #         logits = tyche_model(**inputs).logits
+    #     print("[PASS] Forward pass succeeded.")
+    # except Exception as e:
+    #     print("[FAIL] Forward pass error:")
+    #     print(e)
 
-    # Fix tokenizer pad token
-    if tyche_tokenizer.pad_token is None:
-        print("[INFO] Setting pad_token to eos_token.")
-        tyche_tokenizer.pad_token = tyche_tokenizer.eos_token
+    # # Fix tokenizer pad token
+    # if tyche_tokenizer.pad_token is None:
+    #     print("[INFO] Setting pad_token to eos_token.")
+    #     tyche_tokenizer.pad_token = tyche_tokenizer.eos_token
 
-    # Resize model vocab if needed
-    if tyche_model.config.vocab_size != len(tyche_tokenizer):
-        print(f"[INFO] Resizing model embeddings from {tyche_model.config.vocab_size} to {len(tyche_tokenizer)}")
-        # model.resize_token_embeddings(len(tokenizer))
-        tyche_model.resize_token_embeddings(len(tyche_tokenizer), mean_resizing=False)
+    # # Resize model vocab if needed
+    # if tyche_model.config.vocab_size != len(tyche_tokenizer):
+    #     print(f"[INFO] Resizing model embeddings from {tyche_model.config.vocab_size} to {len(tyche_tokenizer)}")
+    #     # model.resize_token_embeddings(len(tokenizer))
+    #     tyche_model.resize_token_embeddings(len(tyche_tokenizer), mean_resizing=False)
 
-        tyche_model.tie_weights()
+    #     tyche_model.tie_weights()
 
-    validate_model_tokenizer_alignment(tyche_model, tyche_tokenizer)
+    # validate_model_tokenizer_alignment(tyche_model, tyche_tokenizer)
 
-    print(f"Model vocab size:     {tyche_model.config.vocab_size}")
-    print(f"Tokenizer vocab size: {len(tyche_tokenizer)}")
-    print(f"lm_head out_features: {tyche_model.lm_head.out_features}")
-    # will have to add a row of zeros here
+    # print(f"Model vocab size:     {tyche_model.config.vocab_size}")
+    # print(f"Tokenizer vocab size: {len(tyche_tokenizer)}")
+    # print(f"lm_head out_features: {tyche_model.lm_head.out_features}")
+    # # will have to add a row of zeros here
 
-    # Check tokenizer special tokens (may include added tokens!)
-    print("Tokenizer special tokens:", tyche_tokenizer.special_tokens_map)
-    print("Tokenizer added tokens:", tyche_tokenizer.added_tokens_encoder)
+    # # Check tokenizer special tokens (may include added tokens!)
+    # print("Tokenizer special tokens:", tyche_tokenizer.special_tokens_map)
+    # print("Tokenizer added tokens:", tyche_tokenizer.added_tokens_encoder)
 
-    with torch.no_grad():
-        original_params = torch.nn.utils.parameters_to_vector(
-            [p.cpu() for p in tyche_model.parameters()]
-        ).detach().clone()
+    # with torch.no_grad():
+    #     original_params = torch.nn.utils.parameters_to_vector(
+    #         [p.cpu() for p in tyche_model.parameters()]
+    #     ).detach().clone()
 
-    # original_params = torch.nn.utils.parameters_to_vector(tyche_model.parameters()).detach().clone()
-    print("Original parameters saved successfully.")
+    # # original_params = torch.nn.utils.parameters_to_vector(tyche_model.parameters()).detach().clone()
+    # print("Original parameters saved successfully.")
         
     # Create a dataset object for Tyche from the prompts
     tyche_dataset = Dataset.from_dict({"text": train_dataset["clean_prompts"][:n_samples]})
-    tyche_config = VolumeConfig(
-            model=tyche_model,
-            tokenizer=tyche_tokenizer,
-            dataset=tyche_dataset,
-            text_key="text",
-            n_samples=n_samples,
-            cutoff=tyche_cutoff,
-            max_seq_len=512,
-            val_size=10,
-            cache_mode="cpu",
-            chunking=False,
-            implicit_vectors=True,
-            iters=100,
-            allow_unconverged=True
-        )
-    print(f"Running Tyche volume estimator with {n_samples} samples...")
+    # tyche_config = VolumeConfig(
+    #         model=tyche_model,
+    #         tokenizer=tyche_tokenizer,
+    #         dataset=tyche_dataset,
+    #         text_key="text",
+    #         n_samples=n_samples,
+    #         cutoff=tyche_cutoff,
+    #         max_seq_len=512,
+    #         val_size=10,
+    #         cache_mode="cpu",
+    #         chunking=False,
+    #         implicit_vectors=True,
+    #         iters=2,
+    #         allow_unconverged=True
+    #     )
+    # print(f"Running Tyche volume estimator with {n_samples} samples...")
 
-    estimator = VolumeEstimator.from_config(tyche_config)
-    result = estimator.run()
+    # estimator = VolumeEstimator.from_config(tyche_config)
+    # result = estimator.run()
     
-    # Note: Tyche scales vectors to achieve the target KL cutoff
-    scaled_vectors = []
-    scaled_norms = []
-    kl_values = []
+    # # Note: Tyche scales vectors to achieve the target KL cutoff
+    # scaled_vectors = []
+    # scaled_norms = []
+    # kl_values = []
 
-    # Extract perturbation vectors and their scaled norms lets fix this in tyche later on
-    logits_p = estimator.latest_original_logits # one tensor # batch size, sequence length, vocab size
-    logits_q = torch.cat(estimator.latest_perturbed_logits, dim=0)  #  len([(batch size, sequence length, vocab siz)...]) == val_size
-
-
-    tyche_orig_logits = estimator.latest_original_logits
-    tyche_pert_logits = torch.cat(estimator.latest_perturbed_logits, dim=0) 
+    # # Extract perturbation vectors and their scaled norms lets fix this in tyche later on
+    # logits_p = estimator.latest_original_logits # one tensor # batch size, sequence length, vocab size
+    # logits_q = torch.cat(estimator.latest_perturbed_logits, dim=0)  #  len([(batch size, sequence length, vocab siz)...]) == val_size
 
 
-    torch.save(tyche_orig_logits, "compare_perturbations/logits_debug/tyche_logits_original.pt")
-    torch.save(tyche_pert_logits, "compare_perturbations/logits_debug/tyche_logits_perturbed.pt")
+    # tyche_orig_logits = estimator.latest_original_logits
+    # tyche_pert_logits = torch.cat(estimator.latest_perturbed_logits, dim=0) 
 
-    # Save Tyche prompts
-    with open("compare_perturbations/logits_debug/tyche_sequence_input.json", "w") as f:
-        json.dump(train_dataset["clean_prompts"][:n_samples], f, indent=2)
+
+    # torch.save(tyche_orig_logits, os.path.join(model_dir, "logits_original.pt"))
+    # torch.save(tyche_pert_logits, os.path.join(model_dir, "logits_perturbed.pt"))
+
+    # # Save Tyche prompts
+    # with open(os.path.join(model_dir, "sequence_input.json"), "w") as f:
+    #     json.dump(train_dataset["clean_prompts"][:n_samples], f, indent=2)
         
 
-    # TODO : RIGHT NOW this is from ALL perturbed logits concatenated:
-    # compute kl divergence of val size things, and then take the average. and this is the one kl divergence we look at for tyche. 
-    total_kl = 0.0
-    tyche_kl_values = []
-    scaled_norms = []
-    print("   len(estimator.latest_perturbed_logits)", len(estimator.latest_perturbed_logits))
-    print("   len(result.estimates)", len(result.estimates))
-    for i in range(len(result.estimates)):
-        logits_q_i = estimator.latest_perturbed_logits[i]  # shape: (B, T, V)
-        logits_p_i = estimator.latest_original_logits       # same shape
+    # # TODO : RIGHT NOW this is from ALL perturbed logits concatenated:
+    # # compute kl divergence of val size things, and then take the average. and this is the one kl divergence we look at for tyche. 
+    # total_kl = 0.0
+    # tyche_kl_values = []
+    # scaled_norms = []
+    # props = []  # Store probabilities for each sample
+    # print("   len(estimator.latest_perturbed_logits)", len(estimator.latest_perturbed_logits))
+    # print("   len(result.estimates)", len(result.estimates))
+    # for i in range(len(result.estimates)):
+    #     logits_q_i = estimator.latest_perturbed_logits[i]  # shape: (B, T, V)
+    #     logits_p_i = estimator.latest_original_logits       # same shape
 
+    #     # Compute probabilities
+    #     probs_q_i = torch.nn.functional.softmax(logits_q_i, dim=-1)
+    #     probs_p_i = torch.nn.functional.softmax(logits_p_i, dim=-1)
+        
+    #     # Store probabilities for this sample
+    #     props.append({
+    #         "perturbed": probs_q_i.cpu(),
+    #         "original": probs_p_i.cpu()
+    #     })
+
+    #     kl_i = torch.nn.functional.kl_div(
+    #         torch.nn.functional.log_softmax(logits_q_i, dim=-1),
+    #         probs_p_i,
+    #         reduction="batchmean"
+    #     )
+
+    #     # norm_i = torch.linalg.norm(result.estimates[i]).item()
+    #     norm_i = result.mults[i] * result.props[i]  # Which is the actual perturbation radius
+
+
+    #     kl_values.append(kl_i.item())
+    #     scaled_norms.append(norm_i)
+    #     total_kl += kl_i.item()
+
+    # # Compute the average KL divergence
+    # avg_tyche_kl = total_kl / len(estimator.latest_perturbed_logits)
+    # # Save results to JSON
+    # # Save Tyche tensors
+    # torch.save(result.mults, os.path.join(model_dir, "mults.pt"))
+    # torch.save(result.deltas, os.path.join(model_dir, "deltas.pt"))
+    # torch.save(result.props, os.path.join(model_dir, "props.pt"))  # Save proposal vector lengths
+
+    # tyche_results = {
+    #     "avg_tyche_kl": avg_tyche_kl,
+    #     "scaled_norms": scaled_norms,
+    #     "mults_path": os.path.join(model_dir, "mults.pt"),
+    #     "deltas_path": os.path.join(model_dir, "deltas.pt"),
+    #     "props_path": os.path.join(model_dir, "props.pt")  # Add props path to results
+    # }
+
+
+
+    # # Now reload model for layer-specific analysis
+    
+    # print("Average TYCHE KL over all samples:", avg_tyche_kl)
+
+    # # # Find closest POSER coefficient to Tyche KL
+    # poser_kl_diffs = {coeff: abs(val["kl_div"] - avg_tyche_kl) for coeff, val in poser_results.items()}
+    # closest_coeff = min(poser_kl_diffs, key=poser_kl_diffs.get)
+    # avg_tyche_norm = sum(scaled_norms) / len(scaled_norms)
+
+    # del estimator
+    # del result 
+    # del tyche_model
+    # torch.cuda.empty_cache()
+    # gc.collect()
+
+    print("\n=== Tyche Layer-Specific Perturbation ===")
+    print("Reloading model to free GPU memory...")
+    tyche_model, tyche_tokenizer = _load_model_and_tokenizer(model_path)
+
+    # # Get parameter mask for only layer 15
+    # Create a second config with perturbation mask
+    tyche_layer_config = VolumeConfig(
+        model=tyche_model,
+        tokenizer=tyche_tokenizer,
+        dataset=tyche_dataset,
+        text_key="text",
+        n_samples=n_samples,
+        cutoff=tyche_cutoff,
+        max_seq_len=512,
+        val_size=20,
+        cache_mode="cpu",
+        chunking=False,
+        implicit_vectors=True,
+        iters=100,
+        allow_unconverged=True,
+        block_size=2 * 1024,
+        filter_str=f"layers.{intervention_layer}"  # layer filtering
+    )
+
+    layer_estimator = VolumeEstimator.from_config(tyche_layer_config)
+    layer_result = layer_estimator.run()
+
+    # Compute average KL for layer-specific Tyche
+    layer_kl_values = []
+    for i in range(len(layer_result.estimates)):
+        logits_q_i = layer_estimator.latest_perturbed_logits[i]
+        logits_p_i = layer_estimator.latest_original_logits
+        probs_q_i = torch.nn.functional.softmax(logits_q_i, dim=-1)
+        probs_p_i = torch.nn.functional.softmax(logits_p_i, dim=-1)
         kl_i = torch.nn.functional.kl_div(
             torch.nn.functional.log_softmax(logits_q_i, dim=-1),
-            torch.nn.functional.softmax(logits_p_i, dim=-1),
+            probs_p_i,
             reduction="batchmean"
         )
+        layer_kl_values.append(kl_i.item())
 
-        norm_i = torch.linalg.norm(result.estimates[i]).item()
+    avg_layer_kl = sum(layer_kl_values) / len(layer_kl_values)
+    avg_layer_norm = layer_result.estimates.norm(dim=-1).mean().item()
 
-        kl_values.append(kl_i.item())
-        scaled_norms.append(norm_i)
-        total_kl += kl_i.item()
 
-    # Compute the average KL divergence
-    avg_tyche_kl = total_kl / len(estimator.latest_perturbed_logits)
-    # Save results to JSON
-    tyche_results = {
-        "avg_tyche_kl": avg_tyche_kl,
-        "scaled_norms": scaled_norms
+    # Save layer-specific Tyche tensors
+    torch.save(layer_result.deltas, os.path.join(model_dir, "layer15_deltas.pt"))
+    torch.save(layer_result.mults, os.path.join(model_dir, "layer15_mults.pt"))
+    torch.save(layer_result.props, os.path.join(model_dir, "layer15_props.pt"))
+
+
+    # Save layer-specific logits
+    layer_orig_logits = layer_estimator.latest_original_logits
+    layer_pert_logits = torch.cat(layer_estimator.latest_perturbed_logits, dim=0)
+    torch.save(layer_orig_logits, os.path.join(model_dir, "layer15_logits_original.pt"))
+    torch.save(layer_pert_logits, os.path.join(model_dir, "layer15_logits_perturbed.pt"))
+
+
+    # Add layer-specific metrics to results
+    tyche_results["layer_specific"] = {
+        "avg_kl": avg_layer_kl,
+        "avg_norm": avg_layer_norm,
+        "mults_path": os.path.join(model_dir, "layer15_mults.pt"),
+        "deltas_path": os.path.join(model_dir, "layer15_deltas.pt"),
+        "props_path": os.path.join(model_dir, "layer15_props.pt"),
+        "logits_original_path": os.path.join(model_dir, "layer15_logits_original.pt"),
+        "logits_perturbed_path": os.path.join(model_dir, "layer15_logits_perturbed.pt")
     }
-    
-    print("Average TYCHE KL over all samples:", avg_tyche_kl)
 
 
 
-    # Find closest POSER coefficient to Tyche KL
-    poser_kl_diffs = {coeff: abs(val["kl_div"] - avg_tyche_kl) for coeff, val in poser_results.items()}
-    closest_coeff = min(poser_kl_diffs, key=poser_kl_diffs.get)
-    avg_tyche_norm = sum(scaled_norms) / len(scaled_norms)
 
 
     # Compare results
@@ -516,38 +644,6 @@ def compare_poser_and_tyche(model_path, benchmark_path, intervention_layer=15, n
     print(f"Tyche target KL: {tyche_cutoff}")
     print(f"Average Tyche scaled vector norm: {avg_tyche_norm:.6f}")
     print(f"POSER KLCLOSEST: {poser_results[closest_coeff]['kl_div']:.6f}")
-    
-    # Plot results
-    plt.figure(figsize=(10, 6))
-    plt.scatter([avg_tyche_kl], [avg_tyche_norm], label='Tyche (avg)', marker='x', s=200, color='blue')
-
-    # Plot POSER points
-    poser_kl_values = [v["kl_div"] for v in poser_results.values()]
-    poser_norms = [v["vector_norm"] for v in poser_results.values()]
-    plt.scatter(poser_kl_values, poser_norms, label='POSER', color='orange', s=100)
-
-    # Add labels to POSER and TYCHE points
-    plt.annotate("Tyche avg", (avg_tyche_kl, avg_tyche_norm), textcoords="offset points", xytext=(0,10), ha='center')
-    for coeff, result in poser_results.items():
-        plt.annotate(f"coeff={coeff}", 
-                    (result['kl_div'], result['vector_norm']),
-                    textcoords="offset points", 
-                    xytext=(0,10), 
-                    ha='center')
-
-    
-    # Add vertical line for Tyche target KL
-    plt.axvline(x=tyche_cutoff, color='g', linestyle='--', alpha=0.5,
-              label=f'Target KL: {tyche_cutoff}')
-    
-    plt.xlabel('KL Divergence')
-    plt.ylabel('Vector Norm')
-    plt.title('Comparison of POSER and Tyche Perturbation Magnitudes')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(plots_path, f"comparison_layer{intervention_layer}_kl{tyche_cutoff}_{model_name}.png"))
-    print(f"Plot saved to {os.path.join(plots_path, f'comparison_layer{intervention_layer}_kl{tyche_cutoff}_{model_name}.png')}")
-
     
     with open(output_path, "w") as f:
         json.dump({
@@ -559,6 +655,31 @@ def compare_poser_and_tyche(model_path, benchmark_path, intervention_layer=15, n
             "tyche_results": tyche_results,
             "poser_closest_coeff": closest_coeff,
             "poser_closest_vector_norm": poser_results[closest_coeff]["vector_norm"],
+            "file_paths": {
+                "poser_logits": {
+                    "original": [os.path.join(model_dir, f"poser_logits_original_coeff_{coeff}.pt") for coeff in coeffs],
+                    "perturbed": [os.path.join(model_dir, f"poser_logits_perturbed_coeff_{coeff}.pt") for coeff in coeffs],
+                    "sequence_input": os.path.join(model_dir, "poser_sequence_input.json")
+                },
+                "tyche_logits": {
+                    "original": os.path.join(model_dir, "logits_original.pt"),
+                    "perturbed": os.path.join(model_dir, "logits_perturbed.pt"),
+                    "sequence_input": os.path.join(model_dir, "sequence_input.json")
+                },
+                "tyche_layer_specific_logits": {
+                    "original": os.path.join(model_dir, "layer15_logits_original.pt"),
+                    "perturbed": os.path.join(model_dir, "layer15_logits_perturbed.pt")
+                },
+                "results": {
+                    "mults": os.path.join(model_dir, "mults.pt"),
+                    "deltas": os.path.join(model_dir, "deltas.pt"),
+                    "props": os.path.join(model_dir, "props.pt"),
+                    "layer_mults": os.path.join(model_dir, "layer15_mults.pt"),
+                    "layer_deltas": os.path.join(model_dir, "layer15_deltas.pt"),
+                    "layer_props": os.path.join(model_dir, "layer15_props.pt"),
+                    "plot": os.path.join(plots_path, f"comparison_layer{intervention_layer}_kl{tyche_cutoff}.png")
+                }
+            }
         }, f, indent=2)
     print(f"Saved results to {output_path}")
 
@@ -577,6 +698,10 @@ if __name__ == "__main__":
                         help='Number of Tyche samples')
     parser.add_argument('--tyche_cutoff', type=float, default=1e-2,
                         help='Target KL divergence for Tyche')
+    parser.add_argument('--base_output_dir', type=str, default="compare_perturbations",
+                    help='Base directory where results will be saved')
+    parser.add_argument('--device', type=str, default="cuda:0", help='Device to run model on')
+
     
     args = parser.parse_args()
     
@@ -585,5 +710,8 @@ if __name__ == "__main__":
         benchmark_path=args.benchmark_path,
         intervention_layer=args.intervention_layer,
         n_samples=args.n_samples,
-        tyche_cutoff=args.tyche_cutoff
+        tyche_cutoff=args.tyche_cutoff,
+        base_output_dir=args.base_output_dir
     )
+
+
